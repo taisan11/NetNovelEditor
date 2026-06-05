@@ -1,10 +1,12 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "netnoveleditor",
-	// "main": "dist/_worker.js/index.js",
-	"compatibility_date": "2026-05-01",
+	"main": "./server/index.ts",
+	"compatibility_date": "2026-06-01",
 	"assets": {
 		"directory": "./dist",
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		"run_worker_first":["!*","/api/*"]
 	},
 	"compatibility_flags": [
 		"nodejs_compat",
