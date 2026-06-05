@@ -75,6 +75,23 @@ export default function SettingsPage() {
     setTheme(next)
   }
 
+  const [cloudId, setCloudId] = createSignal("")
+  const [cloudPassword, setCloudPassword] = createSignal("")
+  const [cloudError, setCloudError] = createSignal<string | null>(null)
+
+  const handleCloudLogin = (e: SubmitEvent) => {
+    e.preventDefault()
+    const id = cloudId().trim()
+    const password = cloudPassword()
+    if (!id || !password) {
+      setCloudError("IDとパスワードを入力してください")
+      return
+    }
+    setCloudError(null)
+    const params = new URLSearchParams({ id, password })
+    window.location.href = `${window.location.origin}/api/login?${params.toString()}`
+  }
+
   return (
     <section>
       <nav class="breadcrumb">
@@ -153,6 +170,39 @@ export default function SettingsPage() {
           <span class="theme-preview sepia-preview">セピア</span>
         </label>
       </div>
+
+      <h2>クラウド同期</h2>
+      <p class="muted">
+        現在クラウド同期はベータ版のため招待制です。招待されたアカウントでログインすると、作品をクラウドにバックアップして複数端末で同期できます。
+      </p>
+      <form class="cloud-login-form" onSubmit={handleCloudLogin}>
+        <div class="setting-row">
+          <label for="cloud-id-input">ID</label>
+          <input
+            id="cloud-id-input"
+            type="text"
+            autocomplete="username"
+            value={cloudId()}
+            onInput={(e) => setCloudId(e.currentTarget.value)}
+          />
+        </div>
+        <div class="setting-row">
+          <label for="cloud-password-input">パスワード</label>
+          <input
+            id="cloud-password-input"
+            type="password"
+            autocomplete="current-password"
+            value={cloudPassword()}
+            onInput={(e) => setCloudPassword(e.currentTarget.value)}
+          />
+        </div>
+        <div class="cloud-login-actions">
+          <button type="submit">ログイン</button>
+        </div>
+        <Show when={cloudError()}>
+          <p class="error">{cloudError()}</p>
+        </Show>
+      </form>
 
       <h2>バックアップ&インポート</h2>
       <p class="muted">

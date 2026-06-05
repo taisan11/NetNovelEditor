@@ -6,13 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:mg":"drizzle-kit push"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.3",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.23",
     "solid-js": "^1.9.13"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "drizzle-kit": "^0.31.10",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vite-plugin-solid": "^2.11.12"

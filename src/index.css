@@ -477,3 +477,29 @@ button.small {
 .file-input-label input[type="file"] {
   display: none;
 }
+
+.cloud-login-form {
+  margin: 12px 0 8px;
+  max-width: 480px;
+}
+
+.cloud-login-form .setting-row {
+  margin: 0 0 12px;
+}
+
+.cloud-login-form .setting-row label {
+  font-size: 14px;
+}
+
+.cloud-login-form input[type="text"],
+.cloud-login-form input[type="password"] {
+  width: 100%;
+  margin-right: 0;
+}
+
+.cloud-login-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
