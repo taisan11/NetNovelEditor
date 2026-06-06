@@ -4,6 +4,7 @@ import WorkPage from "./pages/WorkPage"
 import ChapterEditPage from "./pages/ChapterEditPage"
 import SettingsPage from "./pages/SettingsPage"
 import { getSettings, applySettings } from "./settings"
+import { autoPushOnNavigate, hasPendingPush } from "./sync"
 
 export type Route =
   | { name: "home" }
@@ -31,11 +32,12 @@ function parseHash(hash: string): Route {
 }
 
 export function navigate(to: string) {
-  const next = to.startsWith("/") ? to : `/${to}`
-  if (window.location.hash === `#${next}`) {
-    setRoute(parseHash(next))
+  const path = "/" + to.replace(/^\/+/, "").replace(/\/+$/, "")
+  const hash = `#${path}`
+  if (window.location.hash === hash) {
+    setRoute(parseHash(path))
   } else {
-    window.location.hash = next
+    window.location.hash = path
   }
 }
 
@@ -44,6 +46,7 @@ export default function App() {
     applySettings(getSettings())
     setRoute(parseHash(window.location.hash))
     window.addEventListener("hashchange", () => {
+      if (hasPendingPush()) void autoPushOnNavigate()
       setRoute(parseHash(window.location.hash))
     })
   })

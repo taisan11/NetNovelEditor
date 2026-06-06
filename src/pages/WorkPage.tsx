@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show } from "solid-js"
+import { createSignal, createEffect, For, Show, onCleanup } from "solid-js"
 import {
   getSyosetu,
   setSyosetu,
@@ -9,6 +9,7 @@ import {
 } from "../storage"
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
+import { autoPushOnNavigate, hasPendingPush } from "../sync"
 
 export default function WorkPage(props: { title: string }) {
   const [work, setWork] = createSignal<Syosetu | null>(null)
@@ -24,6 +25,10 @@ export default function WorkPage(props: { title: string }) {
 
   createEffect(() => {
     refresh()
+  })
+
+  onCleanup(() => {
+    if (hasPendingPush()) void autoPushOnNavigate()
   })
 
   const handleAddChapter = (e: Event) => {

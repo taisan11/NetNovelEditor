@@ -1,10 +1,36 @@
-import { createSignal, createEffect, Show } from "solid-js"
+import { createSignal, createEffect, onMount, Show, onCleanup } from "solid-js"
 import { exportBackup, importBackup } from "../storage"
 import { getSettings, setSettings, applySettings } from "../settings"
 import type { Theme } from "../settings"
 import { navigate } from "../App"
+import {
+  getSyncState,
+  subscribeSync,
+  syncNow,
+  autoPushOnNavigate,
+  type SyncState,
+} from "../sync"
 
 type Message = { kind: "success" | "error"; text: string }
+type CloudUser = { id: string; email: string }
+
+function syncStateLabel(state: SyncState): string {
+  if (state.status === "syncing") return "同期中…"
+  if (state.status === "error") return "エラー"
+  if (state.pendingPush > 0) return "未送信の変更あり"
+  return "アイドル"
+}
+
+function formatDateTime(ts: number): string {
+  const d = new Date(ts)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mi = String(d.getMinutes()).padStart(2, "0")
+  const ss = String(d.getSeconds()).padStart(2, "0")
+  return `${yyyy}/${mm}/${dd} ${hh}:${mi}:${ss}`
+}
 
 export default function SettingsPage() {
   const initial = getSettings()
@@ -13,8 +39,13 @@ export default function SettingsPage() {
   const [theme, setTheme] = createSignal<Theme>(initial.theme)
   const [message, setMessage] = createSignal<Message | null>(null)
 
+  let settingsReady = false
   createEffect(() => {
     const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme() }
+    if (!settingsReady) {
+      settingsReady = true
+      return
+    }
     setSettings(s)
     applySettings(s)
   })
@@ -78,8 +109,59 @@ export default function SettingsPage() {
   const [cloudId, setCloudId] = createSignal("")
   const [cloudPassword, setCloudPassword] = createSignal("")
   const [cloudError, setCloudError] = createSignal<string | null>(null)
+  const [cloudBusy, setCloudBusy] = createSignal(false)
+  const [cloudUser, setCloudUser] = createSignal<CloudUser | null>(null)
 
-  const handleCloudLogin = (e: SubmitEvent) => {
+  const refreshCloudUser = async () => {
+    try {
+      const res = await fetch("/api/auth/me", { credentials: "include" })
+      const data = (await res.json().catch(() => ({}))) as { user?: CloudUser | null }
+      setCloudUser(data.user ?? null)
+    } catch {
+      setCloudUser(null)
+    }
+  }
+
+  const [syncState, setSyncState] = createSignal<SyncState>(getSyncState())
+  const [syncMessage, setSyncMessage] = createSignal<Message | null>(null)
+  let unsubscribeSync: (() => void) | undefined
+
+  const handleSync = async () => {
+    setSyncMessage(null)
+    const result = await syncNow()
+    if (!result.ok) {
+      setSyncMessage({ kind: "error", text: `同期に失敗しました: ${result.error}` })
+      return
+    }
+    const r = result.result
+    if (!r) {
+      setSyncMessage({ kind: "success", text: "変更はありません" })
+      return
+    }
+    const pushed = r.pushedSyosetu + r.pushedChapters
+    const pulled = r.pulledSyosetu + r.pulledChapters
+    const serverWins = r.serverWinsSyosetu + r.serverWinsChapters
+    const parts: string[] = []
+    if (pushed > 0) parts.push(`送信${pushed}件`)
+    if (pulled > 0) parts.push(`受信${pulled}件`)
+    if (serverWins > 0) parts.push(`競合${serverWins}件はサーバー側を採用`)
+    setSyncMessage({
+      kind: serverWins > 0 ? "success" : "success",
+      text: parts.length > 0 ? `同期完了: ${parts.join(" / ")}` : "同期完了: 変更はありません",
+    })
+  }
+
+  onMount(() => {
+    void refreshCloudUser()
+    unsubscribeSync = subscribeSync((s) => setSyncState(s))
+    void autoPushOnNavigate()
+  })
+
+  onCleanup(() => {
+    unsubscribeSync?.()
+  })
+
+  const handleCloudLogin = async (e: SubmitEvent) => {
     e.preventDefault()
     const id = cloudId().trim()
     const password = cloudPassword()
@@ -88,8 +170,48 @@ export default function SettingsPage() {
       return
     }
     setCloudError(null)
-    const params = new URLSearchParams({ id, password })
-    window.location.href = `${window.location.origin}/api/login?${params.toString()}`
+    setCloudBusy(true)
+    try {
+      const res = await fetch("/api/auth/signin", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, password }),
+      })
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string }
+        setCloudError(data.error ?? "ログインに失敗しました")
+        return
+      }
+      const data = (await res.json()) as { user: CloudUser }
+      setCloudUser(data.user)
+      setCloudId("")
+      setCloudPassword("")
+    } catch (err) {
+      setCloudError(
+        `ログインに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  const handleCloudLogout = async () => {
+    setCloudBusy(true)
+    setCloudError(null)
+    try {
+      await fetch("/api/auth/signout", {
+        method: "POST",
+        credentials: "include",
+      })
+      setCloudUser(null)
+    } catch (err) {
+      setCloudError(
+        `ログアウトに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    } finally {
+      setCloudBusy(false)
+    }
   }
 
   return (
@@ -175,34 +297,94 @@ export default function SettingsPage() {
       <p class="muted">
         現在クラウド同期はベータ版のため招待制です。招待されたアカウントでログインすると、作品をクラウドにバックアップして複数端末で同期できます。
       </p>
-      <form class="cloud-login-form" onSubmit={handleCloudLogin}>
-        <div class="setting-row">
-          <label for="cloud-id-input">ID</label>
-          <input
-            id="cloud-id-input"
-            type="text"
-            autocomplete="username"
-            value={cloudId()}
-            onInput={(e) => setCloudId(e.currentTarget.value)}
-          />
+      <Show
+        when={cloudUser()}
+        fallback={
+          <form class="cloud-login-form" onSubmit={handleCloudLogin}>
+            <div class="setting-row">
+              <label for="cloud-id-input">ID</label>
+              <input
+                id="cloud-id-input"
+                type="text"
+                autocomplete="username"
+                value={cloudId()}
+                disabled={cloudBusy()}
+                onInput={(e) => setCloudId(e.currentTarget.value)}
+              />
+            </div>
+            <div class="setting-row">
+              <label for="cloud-password-input">パスワード</label>
+              <input
+                id="cloud-password-input"
+                type="password"
+                autocomplete="current-password"
+                value={cloudPassword()}
+                disabled={cloudBusy()}
+                onInput={(e) => setCloudPassword(e.currentTarget.value)}
+              />
+            </div>
+            <div class="cloud-login-actions">
+              <button type="submit" disabled={cloudBusy()}>
+                {cloudBusy() ? "ログイン中…" : "ログイン"}
+              </button>
+            </div>
+            <Show when={cloudError()}>
+              <p class="error">{cloudError()}</p>
+            </Show>
+          </form>
+        }
+      >
+        <div class="cloud-status">
+          <p>
+            ログイン中: <strong>{(cloudUser() as CloudUser).email}</strong>
+          </p>
+          <button type="button" onClick={handleCloudLogout} disabled={cloudBusy()}>
+            ログアウト
+          </button>
         </div>
-        <div class="setting-row">
-          <label for="cloud-password-input">パスワード</label>
-          <input
-            id="cloud-password-input"
-            type="password"
-            autocomplete="current-password"
-            value={cloudPassword()}
-            onInput={(e) => setCloudPassword(e.currentTarget.value)}
-          />
-        </div>
-        <div class="cloud-login-actions">
-          <button type="submit">ログイン</button>
-        </div>
-        <Show when={cloudError()}>
-          <p class="error">{cloudError()}</p>
+      <Show when={cloudError()}>
+        <p class="error">{cloudError()}</p>
+      </Show>
+    </Show>
+
+      <h2>手動同期</h2>
+      <p class="muted">
+        クラウドとの差分をマージします。ページ遷移時、変更がある場合も自動で送信されます。競合は <code>updatedAt</code> が新しい行が優先されます。
+      </p>
+      <div class="sync-panel">
+        <p>
+          状態: <strong>{syncStateLabel(syncState())}</strong>
+          <Show when={syncState().pendingPush > 0}>
+            <span class="muted">（未送信 {syncState().pendingPush} 件）</span>
+          </Show>
+        </p>
+        <p class="muted">
+          <Show
+            when={syncState().lastSyncAt}
+            fallback={<span>まだ同期したことはありません。</span>}
+          >
+            最終同期: {formatDateTime(syncState().lastSyncAt!)}
+          </Show>
+        </p>
+        <Show when={syncState().lastError}>
+          <p class="error">前回の同期でエラー: {syncState().lastError}</p>
         </Show>
-      </form>
+        <div class="sync-actions">
+          <button
+            type="button"
+            onClick={() => void handleSync()}
+            disabled={syncState().status === "syncing" || !cloudUser()}
+            title={cloudUser() ? "今すぐクラウドと同期します" : "ログインが必要です"}
+          >
+            {syncState().status === "syncing" ? "同期中…" : "今すぐ同期"}
+          </button>
+        </div>
+        <Show when={syncMessage()}>
+          <p class={syncMessage()!.kind === "error" ? "error" : "success"}>
+            {syncMessage()!.text}
+          </p>
+        </Show>
+      </div>
 
       <h2>バックアップ&インポート</h2>
       <p class="muted">

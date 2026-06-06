@@ -8,6 +8,7 @@ import {
 } from "../storage"
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
+import { autoPushOnNavigate, hasPendingPush } from "../sync"
 
 type Tab = "honbun" | "preview" | "plot"
 type HistoryState = { stack: string[]; index: number }
@@ -256,6 +257,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
     document.removeEventListener("keydown", handleKeydown)
     clearHonbunTimer()
     clearPlotTimer()
+    if (hasPendingPush()) void autoPushOnNavigate()
   })
 
   return (

@@ -6,7 +6,7 @@ export interface Settings {
   theme: Theme
 }
 
-const STORAGE_KEY = "netnoveleditor_settings_v1"
+export const SETTINGS_KEY = "netnoveleditor_settings_v1"
 
 const DEFAULT_SETTINGS: Settings = {
   fontSize: 16,
@@ -18,7 +18,7 @@ const VALID_THEMES: Theme[] = ["light", "dark", "sepia"]
 
 export function getSettings(): Settings {
   if (typeof localStorage === "undefined") return { ...DEFAULT_SETTINGS }
-  const data = localStorage.getItem(STORAGE_KEY)
+  const data = localStorage.getItem(SETTINGS_KEY)
   if (!data) return { ...DEFAULT_SETTINGS }
   try {
     const parsed = JSON.parse(data) as Partial<Settings>
@@ -42,7 +42,7 @@ export function getSettings(): Settings {
 
 export function setSettings(settings: Settings): void {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
 }
 
 export function applySettings(settings: Settings): void {
