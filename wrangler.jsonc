@@ -21,6 +21,10 @@
 			"custom_domain": true
 		}
 	],
+	"vars": {
+	  // 危険だけどURLだけでは最悪大丈夫だからまぁいっか
+	  "TURSO_URL":"libsql://netnoveleditor-nne-taisan11.aws-ap-northeast-1.turso.io"
+	},
 	"ratelimits": [
 		{
 			"name": "RATE_LIMITER",
