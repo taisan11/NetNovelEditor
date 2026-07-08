@@ -223,7 +223,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
   const handleDeleteChapter = () => {
     const c = chapter()
     if (!c) return
-    if (!confirm(`チャプター「${c.title}」を削除しますか？`)) return
+    if (!confirm(`話「${c.title}」を削除しますか？`)) return
     persistHonbun()
     deleteChapter(c.Syosetu_title, c.page)
     navigate(`/${encodeURIComponent(props.syosetuTitle)}`)
@@ -265,8 +265,8 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
       when={work() && chapter()}
       fallback={
         <section>
-          <p class="error">チャプターが見つかりません。</p>
-          <button onClick={goWork}>← チャプター一覧へ戻る</button>
+          <p class="error">話が見つかりません。</p>
+          <button onClick={goWork}>← 話一覧へ戻る</button>
         </section>
       }
     >
@@ -289,9 +289,9 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
           type="button"
           class="danger"
           onClick={handleDeleteChapter}
-          aria-label="このチャプターを削除"
+          aria-label="この話を削除"
         >
-          チャプターを削除
+          話を削除
         </button>
       </div>
 

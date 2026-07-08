@@ -1,5 +1,5 @@
 import { createSignal, For, Show } from "solid-js"
-import { listSyosetu, getSyosetu, setSyosetu } from "../storage"
+import { listSyosetu, getSyosetu, setSyosetu, listChapters, deleteSyosetu } from "../storage"
 import type { Syosetu } from "../storage"
 import { navigate } from "../App"
 
@@ -9,6 +9,12 @@ export default function HomePage() {
   const [works, setWorks] = createSignal<Syosetu[]>(listSyosetu())
 
   const refresh = () => setWorks(listSyosetu())
+
+  const handleDelete = (work: Syosetu) => {
+    if (!confirm(`作品「${work.title}」を削除しますか？`)) return
+    deleteSyosetu(work.title)
+    refresh()
+  }
 
   const handleCreate = (e: Event) => {
     e.preventDefault()
@@ -38,8 +44,6 @@ export default function HomePage() {
   return (
     <section>
       <h1>NetNovelEditor</h1>
-      <p class="muted">Web 上で小説を書いて、章ごとに管理するエディター</p>
-
       <form onSubmit={handleCreate} class="new-work">
         <input
           type="text"
@@ -61,12 +65,12 @@ export default function HomePage() {
       </div>
       <Show
         when={works().length > 0}
-        fallback={<p class="empty">まだ作品がありません。上のフォームから作成してください。</p>}
+        fallback={<p class="empty">まだ作品がありません。作成してみてください。</p>}
       >
         <ul class="list">
           <For each={works()}>
             {(work) => (
-              <li>
+              <li class="list-row">
                 <a
                   href={`#/${encodeURIComponent(work.title)}`}
                   onClick={(e) => {
@@ -76,7 +80,15 @@ export default function HomePage() {
                 >
                   {work.title}
                 </a>
-                <span class="muted">（{work.pages} 章）</span>
+                <span class="muted">（{listChapters(work.title).length} 話）</span>
+                <button
+                  type="button"
+                  class="danger small"
+                  onClick={() => handleDelete(work)}
+                  aria-label={`作品「${work.title}」を削除`}
+                >
+                  削除
+                </button>
               </li>
             )}
           </For>

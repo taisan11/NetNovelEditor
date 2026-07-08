@@ -463,6 +463,27 @@ export function deleteChapter(Syosetu_title: string, page: number): void {
   writeChapter(tombstone)
 }
 
+export function deleteSyosetu(title: string): void {
+  ensureInit()
+  const s = index.syosetuByTitle.get(title)
+  if (!s) return
+  const now = Date.now()
+  const chapters = listChapters(title)
+  for (const c of chapters) {
+    deleteChapter(title, c.page)
+  }
+  const tombstone: Syosetu = {
+    ...s,
+    deleted: true,
+    updatedAt: now,
+    dirty: true,
+  }
+  index.syosetuById.set(s.id, tombstone)
+  index.syosetuByTitle.set(title, tombstone)
+  if (!s.dirty) index.dirtySyosetuCount++
+  writeSyosetu(tombstone)
+}
+
 export function listChapters(Syosetu_title: string): Chapter[] {
   ensureInit()
   const list = index.chaptersBySyosetuId.get(

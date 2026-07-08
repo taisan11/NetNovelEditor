@@ -84,7 +84,7 @@ export default function SettingsPage() {
         const result = importBackup(json)
         setMessage({
           kind: "success",
-          text: `${result.works}作品・${result.chapters}チャプターをインポートしました。まもなく作品一覧へ移動します…`,
+          text: `${result.works}作品・${result.chapters}話をインポートしました。まもなく作品一覧へ移動します…`,
         })
         setTimeout(() => navigate(""), 1500)
       } catch (err) {
@@ -187,6 +187,7 @@ export default function SettingsPage() {
       setCloudUser(data.user)
       setCloudId("")
       setCloudPassword("")
+      void syncNow()
     } catch (err) {
       setCloudError(
         `ログインに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
@@ -349,7 +350,7 @@ export default function SettingsPage() {
 
       <h2>手動同期</h2>
       <p class="muted">
-        クラウドとの差分をマージします。ページ遷移時、変更がある場合も自動で送信されます。競合は <code>updatedAt</code> が新しい行が優先されます。
+        手動で同期します。競合があった際はより新しい編集が優先されます。
       </p>
       <div class="sync-panel">
         <p>
