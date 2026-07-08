@@ -4,6 +4,7 @@ export interface Settings {
   fontSize: number
   lineHeight: number
   theme: Theme
+  verticalWriting: boolean
 }
 
 export const SETTINGS_KEY = "netnoveleditor_settings_v1"
@@ -12,6 +13,7 @@ const DEFAULT_SETTINGS: Settings = {
   fontSize: 16,
   lineHeight: 1.7,
   theme: "light",
+  verticalWriting: false,
 }
 
 const VALID_THEMES: Theme[] = ["light", "dark", "sepia"]
@@ -34,6 +36,10 @@ export function getSettings(): Settings {
       theme: VALID_THEMES.includes(parsed.theme as Theme)
         ? (parsed.theme as Theme)
         : DEFAULT_SETTINGS.theme,
+      verticalWriting:
+        typeof parsed.verticalWriting === "boolean"
+          ? parsed.verticalWriting
+          : DEFAULT_SETTINGS.verticalWriting,
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -51,4 +57,5 @@ export function applySettings(settings: Settings): void {
   root.style.setProperty("--editor-font-size", `${settings.fontSize}px`)
   root.style.setProperty("--editor-line-height", String(settings.lineHeight))
   root.dataset.theme = settings.theme
+  root.dataset.verticalWriting = String(settings.verticalWriting)
 }

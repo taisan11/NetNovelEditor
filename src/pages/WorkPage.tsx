@@ -10,6 +10,7 @@ import {
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
 import { autoPushOnNavigate, hasPendingPush } from "../sync"
+import Trash from "lucide-solid/icons/trash"
 
 export default function WorkPage(props: { title: string }) {
   const [work, setWork] = createSignal<Syosetu | null>(null)
@@ -111,6 +112,7 @@ export default function WorkPage(props: { title: string }) {
                   onClick={() => handleDeleteChapter(chapter)}
                   aria-label={`話「${chapter.title}」を削除`}
                 >
+                  <Trash size={14} />
                   削除
                 </button>
               </li>

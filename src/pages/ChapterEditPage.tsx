@@ -9,6 +9,13 @@ import {
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
 import { autoPushOnNavigate, hasPendingPush } from "../sync"
+import { getSettings } from "../settings"
+import Trash from "lucide-solid/icons/trash"
+import RotateCcw from "lucide-solid/icons/rotate-ccw"
+import RotateCw from "lucide-solid/icons/rotate-cw"
+import TextCursorInput from "lucide-solid/icons/text-cursor-input"
+import Save from "lucide-solid/icons/save"
+import Settings from "lucide-solid/icons/settings"
 
 type Tab = "honbun" | "preview" | "plot"
 type HistoryState = { stack: string[]; index: number }
@@ -231,6 +238,10 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
 
   const goWork = () => navigate(`/${encodeURIComponent(props.syosetuTitle)}`)
 
+  const goSettings = () => navigate("/settings")
+
+  const isVerticalWriting = () => getSettings().verticalWriting
+
   const handleKeydown = (e: KeyboardEvent) => {
     if (!(e.ctrlKey || e.metaKey)) return
     if (e.altKey) return
@@ -285,14 +296,26 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
         <h1>
           {chapter()!.page}. {chapter()!.title}
         </h1>
-        <button
-          type="button"
-          class="danger"
-          onClick={handleDeleteChapter}
-          aria-label="この話を削除"
-        >
-          話を削除
-        </button>
+        <div class="chapter-header-actions">
+          <button
+            type="button"
+            class="header-btn"
+            onClick={goSettings}
+            title="設定"
+            aria-label="設定を開く"
+          >
+            <Settings size={16} />
+          </button>
+          <button
+            type="button"
+            class="danger"
+            onClick={handleDeleteChapter}
+            aria-label="この話を削除"
+          >
+            <Trash size={16} />
+            話を削除
+          </button>
+        </div>
       </div>
 
       <div class="tabs-row">
@@ -331,7 +354,8 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
               title="元に戻す (Ctrl+Z)"
               aria-label="本文を元に戻す"
             >
-              ↶ 元に戻す
+              <RotateCcw size={16} />
+              元に戻す
             </button>
             <button
               type="button"
@@ -340,7 +364,8 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
               title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
               aria-label="本文のやり直し"
             >
-              ↷ やり直し
+              <RotateCw size={16} />
+              やり直し
             </button>
             <button
               type="button"
@@ -348,6 +373,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
               onClick={() => insertRuby(honbunTextareaRef)}
               title="選択中の文字を |《》 で囲みます"
             >
+              <TextCursorInput size={16} />
               ルビ入力
             </button>
           </div>
@@ -361,7 +387,8 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
               title="元に戻す (Ctrl+Z)"
               aria-label="プロットを元に戻す"
             >
-              ↶ 元に戻す
+              <RotateCcw size={16} />
+              元に戻す
             </button>
             <button
               type="button"
@@ -370,7 +397,8 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
               title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
               aria-label="プロットのやり直し"
             >
-              ↷ やり直し
+              <RotateCw size={16} />
+              やり直し
             </button>
           </div>
         </Show>
@@ -379,7 +407,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
       <Show when={tab() === "honbun"}>
         <textarea
           ref={honbunTextareaRef}
-          class="editor"
+          class={`editor ${isVerticalWriting() ? "vertical" : ""}`}
           value={honbun()}
           onInput={(e) => {
             setHonbun(e.currentTarget.value)
@@ -393,19 +421,20 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
         <div class="actions">
           <span class="muted">{honbunDirty() ? "未保存の変更あり" : "保存済み"}</span>
           <button onClick={persistHonbun} disabled={!honbunDirty()}>
+            <Save size={16} />
             保存
           </button>
         </div>
       </Show>
 
       <Show when={tab() === "preview"}>
-        <div class="preview" innerHTML={renderHonbun(honbun())} />
+        <div class={`preview ${isVerticalWriting() ? "vertical" : ""}`} innerHTML={renderHonbun(honbun())} />
       </Show>
 
       <Show when={tab() === "plot"}>
         <textarea
           ref={plotTextareaRef}
-          class="editor"
+          class={`editor ${isVerticalWriting() ? "vertical" : ""}`}
           value={plot()}
           onInput={(e) => {
             setPlot(e.currentTarget.value)
@@ -419,6 +448,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
         <div class="actions">
           <span class="muted">{plotDirty() ? "未保存の変更あり" : "保存済み"}</span>
           <button onClick={persistPlot} disabled={!plotDirty()}>
+            <Save size={16} />
             保存
           </button>
         </div>

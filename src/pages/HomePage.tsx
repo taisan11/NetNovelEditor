@@ -2,6 +2,7 @@ import { createSignal, For, Show } from "solid-js"
 import { listSyosetu, getSyosetu, setSyosetu, listChapters, deleteSyosetu } from "../storage"
 import type { Syosetu } from "../storage"
 import { navigate } from "../App"
+import Trash from "lucide-solid/icons/trash"
 
 export default function HomePage() {
   const [newTitle, setNewTitle] = createSignal("")
@@ -87,6 +88,7 @@ export default function HomePage() {
                   onClick={() => handleDelete(work)}
                   aria-label={`作品「${work.title}」を削除`}
                 >
+                  <Trash size={14} />
                   削除
                 </button>
               </li>

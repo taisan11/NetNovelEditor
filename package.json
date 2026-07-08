@@ -13,6 +13,7 @@
     "@libsql/client": "^0.17.4",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.28",
+    "lucide-solid": "^1.23.0",
     "solid-js": "^1.9.14"
   },
   "devDependencies": {

@@ -37,11 +37,12 @@ export default function SettingsPage() {
   const [fontSize, setFontSize] = createSignal(initial.fontSize)
   const [lineHeight, setLineHeight] = createSignal(initial.lineHeight)
   const [theme, setTheme] = createSignal<Theme>(initial.theme)
+  const [verticalWriting, setVerticalWriting] = createSignal(initial.verticalWriting)
   const [message, setMessage] = createSignal<Message | null>(null)
 
   let settingsReady = false
   createEffect(() => {
-    const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme() }
+    const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme(), verticalWriting: verticalWriting() }
     if (!settingsReady) {
       settingsReady = true
       return
@@ -258,6 +259,16 @@ export default function SettingsPage() {
           value={lineHeight()}
           onInput={(e) => setLineHeight(Number(e.currentTarget.value))}
         />
+      </div>
+      <div class="setting-row">
+        <label>
+          <input
+            type="checkbox"
+            checked={verticalWriting()}
+            onChange={(e) => setVerticalWriting(e.currentTarget.checked)}
+          />
+          縦書きモード
+        </label>
       </div>
 
       <h2>テーマ</h2>
