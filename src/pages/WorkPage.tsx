@@ -10,6 +10,7 @@ import {
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
 import { autoPushOnNavigate, hasPendingPush } from "../sync"
+import Trash from "lucide-solid/icons/trash"
 
 export default function WorkPage(props: { title: string }) {
   const [work, setWork] = createSignal<Syosetu | null>(null)
@@ -35,7 +36,7 @@ export default function WorkPage(props: { title: string }) {
     e.preventDefault()
     const title = newChapterTitle().trim()
     if (!title) {
-      setError("チャプタータイトルを入力してください")
+      setError("話タイトルを入力してください")
       return
     }
     const w = work()
@@ -56,7 +57,7 @@ export default function WorkPage(props: { title: string }) {
   }
 
   const handleDeleteChapter = (chapter: Chapter) => {
-    if (!confirm(`チャプター「${chapter.title}」を削除しますか？`)) return
+    if (!confirm(`話「${chapter.title}」を削除しますか？`)) return
     deleteChapter(chapter.Syosetu_title, chapter.page)
     refresh()
     void autoPushOnNavigate()
@@ -86,12 +87,12 @@ export default function WorkPage(props: { title: string }) {
         </a>
       </nav>
       <h1>{work()!.title}</h1>
-      <p class="muted">{chapters().length} 章</p>
+      <p class="muted">{chapters().length} 話</p>
 
-      <h2>チャプター一覧</h2>
+      <h2>話一覧</h2>
       <Show
         when={chapters().length > 0}
-        fallback={<p class="empty">まだチャプターがありません。下のフォームから追加してください。</p>}
+        fallback={<p class="empty">まだ話がありません。下のフォームから追加してください。</p>}
       >
         <ul class="list">
           <For each={chapters()}>
@@ -110,8 +111,9 @@ export default function WorkPage(props: { title: string }) {
                   type="button"
                   class="danger small"
                   onClick={() => handleDeleteChapter(chapter)}
-                  aria-label={`チャプター「${chapter.title}」を削除`}
+                  aria-label={`話「${chapter.title}」を削除`}
                 >
+                  <Trash size={14} />
                   削除
                 </button>
               </li>
@@ -123,11 +125,11 @@ export default function WorkPage(props: { title: string }) {
       <form onSubmit={handleAddChapter} class="new-chapter">
         <input
           type="text"
-          placeholder="チャプタータイトル"
+          placeholder="話タイトル"
           value={newChapterTitle()}
           onInput={(e) => setNewChapterTitle(e.currentTarget.value)}
         />
-        <button type="submit">チャプターを追加</button>
+        <button type="submit">話を追加</button>
       </form>
       <Show when={error()}>
         <p class="error">{error()}</p>

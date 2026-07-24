@@ -38,11 +38,12 @@ export default function SettingsPage() {
   const [fontSize, setFontSize] = createSignal(initial.fontSize)
   const [lineHeight, setLineHeight] = createSignal(initial.lineHeight)
   const [theme, setTheme] = createSignal<Theme>(initial.theme)
+  const [verticalWriting, setVerticalWriting] = createSignal(initial.verticalWriting)
   const [message, setMessage] = createSignal<Message | null>(null)
 
   let settingsReady = false
   createEffect(() => {
-    const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme() }
+    const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme(), verticalWriting: verticalWriting() }
     if (!settingsReady) {
       settingsReady = true
       return
@@ -85,7 +86,7 @@ export default function SettingsPage() {
         const result = importBackup(json)
         setMessage({
           kind: "success",
-          text: `${result.works}作品・${result.chapters}チャプターをインポートしました。まもなく作品一覧へ移動します…`,
+          text: `${result.works}作品・${result.chapters}話をインポートしました。まもなく作品一覧へ移動します…`,
         })
         setTimeout(() => navigate(""), 1500)
       } catch (err) {
@@ -192,6 +193,7 @@ export default function SettingsPage() {
       setSyncAccount(data.user.id)
       setCloudId("")
       setCloudPassword("")
+      void syncNow()
     } catch (err) {
       setCloudError(
         `ログインに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
@@ -263,6 +265,16 @@ export default function SettingsPage() {
           value={lineHeight()}
           onInput={(e) => setLineHeight(Number(e.currentTarget.value))}
         />
+      </div>
+      <div class="setting-row">
+        <label>
+          <input
+            type="checkbox"
+            checked={verticalWriting()}
+            onChange={(e) => setVerticalWriting(e.currentTarget.checked)}
+          />
+          縦書きモード
+        </label>
       </div>
 
       <h2>テーマ</h2>
@@ -355,7 +367,7 @@ export default function SettingsPage() {
 
       <h2>手動同期</h2>
       <p class="muted">
-        クラウドとの差分をマージします。ページ遷移時、変更がある場合も自動で送信されます。競合は <code>updatedAt</code> が新しい行が優先されます。
+        手動で同期します。競合があった際はより新しい編集が優先されます。
       </p>
       <div class="sync-panel">
         <p>

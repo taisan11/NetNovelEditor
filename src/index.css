@@ -149,6 +149,9 @@ button {
   border-radius: 4px;
   cursor: pointer;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 button:hover:not(:disabled) {
@@ -294,6 +297,23 @@ input[type="range"] {
   transition: font-size 0.1s, line-height 0.1s, background-color 0.15s, color 0.15s, border-color 0.15s;
 }
 
+.editor.vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  height: 600px;
+  min-height: 400px;
+  overflow-y: auto;
+}
+
+.preview.vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  height: 600px;
+  min-height: 400px;
+  overflow-y: auto;
+  white-space: normal;
+}
+
 .editor:focus {
   outline: none;
 }
@@ -328,6 +348,12 @@ input[type="range"] {
 
 .chapter-header h1 {
   margin: 0;
+}
+
+.chapter-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 button.danger {
