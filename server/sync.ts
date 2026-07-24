@@ -35,6 +35,7 @@ interface ChapterPayload {
   createdAt: number
   updatedAt: number
   deleted: boolean
+  allowEmptyHonbun?: boolean
 }
 
 interface PushBody {
@@ -110,6 +111,54 @@ app.get("/snapshot", async (c) => {
     chapters: cRows.map(asChapterPayload),
     serverTime: Date.now(),
   })
+})
+
+app.delete("/chapter/:id", async (c) => {
+  const user = c.get("user")!
+  const id = c.req.param("id")
+  const db = makeDb(c.env.TURSO_URL, c.env.TURSO_TOKEN)
+  const existing = await db
+    .select()
+    .from(chapter)
+    .where(and(eq(chapter.userId, user.id), eq(chapter.id, id)))
+    .limit(1)
+
+  if (existing.length === 0) return c.json({ ok: true, deleted: false })
+
+  const deletedAt = Date.now()
+  await db
+    .update(chapter)
+    .set({ deleted: true, updatedAt: toMs(deletedAt) })
+    .where(and(eq(chapter.userId, user.id), eq(chapter.id, id)))
+
+  return c.json({ ok: true, deleted: true, updatedAt: deletedAt })
+})
+
+app.delete("/syosetu/:id", async (c) => {
+  const user = c.get("user")!
+  const id = c.req.param("id")
+  const db = makeDb(c.env.TURSO_URL, c.env.TURSO_TOKEN)
+  const existing = await db
+    .select()
+    .from(syosetu)
+    .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, id)))
+    .limit(1)
+
+  if (existing.length === 0) return c.json({ ok: true, deleted: false })
+
+  const deletedAt = Date.now()
+  await db.transaction(async (tx) => {
+    await tx
+      .update(chapter)
+      .set({ deleted: true, updatedAt: toMs(deletedAt) })
+      .where(and(eq(chapter.userId, user.id), eq(chapter.syosetuId, id)))
+    await tx
+      .update(syosetu)
+      .set({ deleted: true, updatedAt: toMs(deletedAt) })
+      .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, id)))
+  })
+
+  return c.json({ ok: true, deleted: true, updatedAt: deletedAt })
 })
 
 app.post(
@@ -243,6 +292,15 @@ app.post(
 
     const row = existing[0]
     if (clientUpdated <= row.updatedAt.getTime()) {
+      return c.json({
+        ok: true,
+        winner: "server",
+        appliedAt: row.updatedAt.getTime(),
+        server: asChapterPayload(row),
+      })
+    }
+
+    if (body.honbun === "" && row.honbun !== "" && body.allowEmptyHonbun !== true) {
       return c.json({
         ok: true,
         winner: "server",
@@ -396,6 +454,14 @@ app.post(
               })
               cResults.push({ id: ch.id, winner: "client" })
             } else if (ch.updatedAt > existing.updatedAt.getTime()) {
+              if (ch.honbun === "" && existing.honbun !== "" && ch.allowEmptyHonbun !== true) {
+                cResults.push({
+                  id: ch.id,
+                  winner: "server",
+                  server: asChapterPayload(existing),
+                })
+                continue
+              }
               await tx
                 .update(chapter)
                 .set({

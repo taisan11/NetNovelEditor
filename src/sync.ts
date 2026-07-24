@@ -37,6 +37,26 @@ export interface SyncResult {
   finishedAt: number
 }
 
+const LAST_SYNC_KEY = "netnoveleditor_last_sync_v1"
+let syncAccountId: string | null = null
+
+function lastSyncStorageKey(): string {
+  return `${LAST_SYNC_KEY}_${encodeURIComponent(syncAccountId ?? "anonymous")}`
+}
+
+function loadLastSyncAt(): number | null {
+  if (typeof localStorage === "undefined") return null
+  const raw = localStorage.getItem(lastSyncStorageKey())
+  if (raw === null) return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function saveLastSyncAt(value: number): void {
+  if (typeof localStorage === "undefined" || syncAccountId === null) return
+  localStorage.setItem(lastSyncStorageKey(), String(value))
+}
+
 const LISTENERS = new Set<(state: SyncState) => void>()
 
 let state: SyncState = {
@@ -45,6 +65,12 @@ let state: SyncState = {
   lastError: null,
   pendingPush: 0,
   lastResult: null,
+}
+
+export function setSyncAccount(accountId: string | null): void {
+  if (syncAccountId === accountId) return
+  syncAccountId = accountId
+  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null })
 }
 
 function emit(): void {
@@ -173,6 +199,7 @@ function toClientChapter(c: ServerChapter, fallbackSyosetuTitle: string): Chapte
     updatedAt: c.updatedAt,
     deleted: c.deleted,
     dirty: false,
+    honbunClearRequested: false,
   }
 }
 
@@ -188,6 +215,10 @@ export interface PushDirtyResult {
 export async function pushDirty(): Promise<PushDirtyResult> {
   const dirtyS = listDirtySyosetu()
   const dirtyC = listDirtyChapters()
+  const deletedS = dirtyS.filter((s) => s.deleted)
+  const deletedC = dirtyC.filter((c) => c.deleted)
+  const liveS = dirtyS.filter((s) => !s.deleted)
+  const liveC = dirtyC.filter((c) => !c.deleted)
   if (dirtyS.length === 0 && dirtyC.length === 0) {
     recomputePending()
     return {
@@ -199,27 +230,81 @@ export async function pushDirty(): Promise<PushDirtyResult> {
     }
   }
 
+  let deletedSyosetu = 0
+  let deletedChapters = 0
+
+  // Deletions use dedicated idempotent endpoints. Keep local tombstones until
+  // all requests succeed so offline deletes can be retried safely.
+  for (const s of deletedS) {
+    const deleteResult = await fetchJson<{ ok: boolean }>(
+      `/api/sync/syosetu/${encodeURIComponent(s.id)}`,
+      { method: "DELETE" },
+    )
+    if (!deleteResult.ok) {
+      return {
+        ok: false,
+        pushedSyosetu: deletedSyosetu,
+        pushedChapters: deletedChapters,
+        serverWinsSyosetu: 0,
+        serverWinsChapters: 0,
+        error: deleteResult.error,
+      }
+    }
+    deletedSyosetu++
+  }
+
+  for (const c of deletedC) {
+    const deleteResult = await fetchJson<{ ok: boolean }>(
+      `/api/sync/chapter/${encodeURIComponent(c.id)}`,
+      { method: "DELETE" },
+    )
+    if (!deleteResult.ok) {
+      return {
+        ok: false,
+        pushedSyosetu: deletedSyosetu,
+        pushedChapters: deletedChapters,
+        serverWinsSyosetu: 0,
+        serverWinsChapters: 0,
+        error: deleteResult.error,
+      }
+    }
+    deletedChapters++
+  }
+
+  if (liveS.length === 0 && liveC.length === 0) {
+    removeDeletedTombstones()
+    recomputePending()
+    return {
+      ok: true,
+      pushedSyosetu: deletedSyosetu,
+      pushedChapters: deletedChapters,
+      serverWinsSyosetu: 0,
+      serverWinsChapters: 0,
+    }
+  }
+
   const res = await fetchJson<PushResponse>("/api/sync/push", {
     method: "POST",
     body: JSON.stringify({
-      syosetu: dirtyS.map((s) => ({
+      syosetu: liveS.map((s) => ({
         id: s.id,
         title: s.title,
         pages: s.pages,
         plot: s.plot,
         createdAt: s.updatedAt,
         updatedAt: s.updatedAt,
-        deleted: !!s.deleted,
+        deleted: false,
       })),
-      chapters: dirtyC.map((c) => ({
+      chapters: liveC.map((c) => ({
         id: c.id,
         syosetuId: c.syosetuId,
         title: c.title,
         page: c.page,
         honbun: c.honbun,
+        allowEmptyHonbun: c.honbunClearRequested === true,
         createdAt: c.updatedAt,
         updatedAt: c.updatedAt,
-        deleted: !!c.deleted,
+        deleted: false,
       })),
     }),
   })
@@ -227,16 +312,16 @@ export async function pushDirty(): Promise<PushDirtyResult> {
   if (!res.ok) {
     return {
       ok: false,
-      pushedSyosetu: 0,
-      pushedChapters: 0,
+      pushedSyosetu: deletedSyosetu,
+      pushedChapters: deletedChapters,
       serverWinsSyosetu: 0,
       serverWinsChapters: 0,
       error: res.error,
     }
   }
 
-  let pushedSyosetu = 0
-  let pushedChapters = 0
+  let pushedSyosetu = deletedSyosetu
+  let pushedChapters = deletedChapters
   let serverWinsSyosetu = 0
   let serverWinsChapters = 0
 
@@ -277,13 +362,24 @@ export interface PullResult {
   ok: boolean
   pulledSyosetu: number
   pulledChapters: number
+  serverTime?: number
   error?: string
 }
 
 export async function pullSnapshot(): Promise<PullResult> {
-  const res = await fetchJson<SnapshotResponse>("/api/sync/snapshot")
+  const lastSyncAt = state.lastSyncAt
+  const since = lastSyncAt === null ? "" : `?since=${Math.max(0, lastSyncAt - 1)}`
+  const res = await fetchJson<SnapshotResponse>(`/api/sync/snapshot${since}`)
   if (!res.ok) {
     return { ok: false, pulledSyosetu: 0, pulledChapters: 0, error: res.error }
+  }
+  if (!Number.isFinite(res.data.serverTime) || res.data.serverTime < 0) {
+    return {
+      ok: false,
+      pulledSyosetu: 0,
+      pulledChapters: 0,
+      error: "サーバー時刻を取得できませんでした",
+    }
   }
 
   const localSyosetu = new Map(listSyosetu().map((s) => [s.id, s]))
@@ -344,8 +440,10 @@ export async function pullSnapshot(): Promise<PullResult> {
     }
   }
 
+  saveLastSyncAt(res.data.serverTime)
+  setState({ lastSyncAt: res.data.serverTime })
   recomputePending()
-  return { ok: true, pulledSyosetu, pulledChapters }
+  return { ok: true, pulledSyosetu, pulledChapters, serverTime: res.data.serverTime }
 }
 
 export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
@@ -383,7 +481,6 @@ export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; err
   }
   setState({
     status: "idle",
-    lastSyncAt: Date.now(),
     lastResult: result,
     lastError: null,
   })

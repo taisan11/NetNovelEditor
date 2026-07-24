@@ -1,7 +1,8 @@
 import { createSignal, For, Show } from "solid-js"
-import { listSyosetu, getSyosetu, setSyosetu } from "../storage"
+import { listSyosetu, getSyosetu, setSyosetu, deleteSyosetu } from "../storage"
 import type { Syosetu } from "../storage"
 import { navigate } from "../App"
+import { autoPushOnNavigate } from "../sync"
 
 export default function HomePage() {
   const [newTitle, setNewTitle] = createSignal("")
@@ -35,6 +36,13 @@ export default function HomePage() {
     navigate("/settings")
   }
 
+  const handleDelete = (work: Syosetu) => {
+    if (!confirm(`作品「${work.title}」を削除しますか？`)) return
+    deleteSyosetu(work.title)
+    refresh()
+    void autoPushOnNavigate()
+  }
+
   return (
     <section>
       <h1>NetNovelEditor</h1>
@@ -66,7 +74,7 @@ export default function HomePage() {
         <ul class="list">
           <For each={works()}>
             {(work) => (
-              <li>
+              <li class="list-row">
                 <a
                   href={`#/${encodeURIComponent(work.title)}`}
                   onClick={(e) => {
@@ -77,6 +85,14 @@ export default function HomePage() {
                   {work.title}
                 </a>
                 <span class="muted">（{work.pages} 章）</span>
+                <button
+                  type="button"
+                  class="danger small"
+                  onClick={() => handleDelete(work)}
+                  aria-label={`作品「${work.title}」を削除`}
+                >
+                  削除
+                </button>
               </li>
             )}
           </For>

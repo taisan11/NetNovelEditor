@@ -8,6 +8,7 @@ import {
   subscribeSync,
   syncNow,
   autoPushOnNavigate,
+  setSyncAccount,
   type SyncState,
 } from "../sync"
 
@@ -116,9 +117,12 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/auth/me", { credentials: "include" })
       const data = (await res.json().catch(() => ({}))) as { user?: CloudUser | null }
-      setCloudUser(data.user ?? null)
+      const user = data.user ?? null
+      setCloudUser(user)
+      setSyncAccount(user?.id ?? null)
     } catch {
       setCloudUser(null)
+      setSyncAccount(null)
     }
   }
 
@@ -185,6 +189,7 @@ export default function SettingsPage() {
       }
       const data = (await res.json()) as { user: CloudUser }
       setCloudUser(data.user)
+      setSyncAccount(data.user.id)
       setCloudId("")
       setCloudPassword("")
     } catch (err) {
@@ -205,6 +210,7 @@ export default function SettingsPage() {
         credentials: "include",
       })
       setCloudUser(null)
+      setSyncAccount(null)
     } catch (err) {
       setCloudError(
         `ログアウトに失敗しました: ${err instanceof Error ? err.message : String(err)}`,

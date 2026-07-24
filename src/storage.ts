@@ -5,6 +5,7 @@ import {
   MAX_HONBUN_LENGTH,
 } from "../server/limits"
 
+// 型定義
 export interface Syosetu {
   id: string
   title: string
@@ -25,9 +26,11 @@ export interface Chapter {
   updatedAt: number
   deleted?: boolean
   dirty?: boolean
+  // Emptying an existing chapter is destructive; this is set only by an
+  // explicit editor save so sync can distinguish it from an accidental blank.
+  honbunClearRequested?: boolean
 }
 
-const MIGRATION_KEY = "netnoveleditor_migration_v2"
 const MAX_TITLE = MAX_TITLE_LENGTH
 const MAX_PLOT = MAX_PLOT_LENGTH
 const MAX_HONBUN = MAX_HONBUN_LENGTH
@@ -58,16 +61,6 @@ function isSyosetu(value: unknown): value is Syosetu {
   )
 }
 
-function isLegacySyosetu(value: unknown): value is Omit<Syosetu, "id" | "updatedAt"> {
-  if (typeof value !== "object" || value === null) return false
-  const v = value as Record<string, unknown>
-  return (
-    typeof v.title === "string" &&
-    typeof v.pages === "number" &&
-    typeof v.plot === "string"
-  )
-}
-
 function isChapter(value: unknown): value is Chapter {
   if (typeof value !== "object" || value === null) return false
   const v = value as Record<string, unknown>
@@ -80,27 +73,6 @@ function isChapter(value: unknown): value is Chapter {
     typeof v.honbun === "string" &&
     typeof v.updatedAt === "number"
   )
-}
-
-function isLegacyChapter(value: unknown): value is Omit<Chapter, "id" | "syosetuId" | "updatedAt"> {
-  if (typeof value !== "object" || value === null) return false
-  const v = value as Record<string, unknown>
-  return (
-    typeof v.Syosetu_title === "string" &&
-    typeof v.title === "string" &&
-    typeof v.page === "number" &&
-    typeof v.honbun === "string"
-  )
-}
-
-function chapterKey(syosetuTitle: string, page: number): string {
-  return `${syosetuTitle}_chapter_${page}`
-}
-
-function parseTitleFromChapterKey(key: string): string | null {
-  const idx = key.lastIndexOf("_chapter_")
-  if (idx <= 0) return null
-  return key.slice(0, idx)
 }
 
 function truncate(value: string, max: number): string {
@@ -148,7 +120,6 @@ function createIndex(): IndexState {
 }
 
 let index: IndexState = createIndex()
-let migrationDone = false
 let initStarted = false
 
 function rebuildFromStorage(): void {
@@ -157,7 +128,7 @@ function rebuildFromStorage(): void {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
     if (!key) continue
-    if (key === SETTINGS_KEY || key === MIGRATION_KEY) continue
+    if (key === SETTINGS_KEY) continue
     const raw = localStorage.getItem(key)
     if (!raw) continue
     let parsed: unknown
@@ -185,102 +156,19 @@ function indexRawRecord(key: string, parsed: unknown): void {
     if (parsed.dirty) index.dirtyChapterCount++
     return
   }
-  // Legacy chapter data is not re-indexed here; the migration rewrites
-  // it as proper Chapter objects into localStorage on init.
+  // Unknown localStorage values are ignored.
   void key
-}
-
-function migrateIfNeeded(): void {
-  if (typeof localStorage === "undefined") {
-    migrationDone = true
-    return
-  }
-  if (localStorage.getItem(MIGRATION_KEY)) {
-    migrationDone = true
-    return
-  }
-
-  const now = Date.now()
-  const allKeys: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i)
-    if (k) allKeys.push(k)
-  }
-  const titleToId = new Map<string, string>()
-
-  for (const key of allKeys) {
-    if (key === SETTINGS_KEY || key === MIGRATION_KEY) continue
-    const raw = localStorage.getItem(key)
-    if (!raw) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      continue
-    }
-    if (isSyosetu(parsed)) {
-      titleToId.set(parsed.title, parsed.id)
-      continue
-    }
-    if (isLegacySyosetu(parsed) && !key.includes("_chapter_")) {
-      const id = newId()
-      const migrated: Syosetu = {
-        id,
-        title: parsed.title,
-        pages: parsed.pages,
-        plot: parsed.plot,
-        updatedAt: now,
-        dirty: true,
-      }
-      localStorage.setItem(parsed.title, JSON.stringify(migrated))
-      localStorage.removeItem(key)
-      titleToId.set(parsed.title, id)
-    }
-  }
-
-  for (const key of allKeys) {
-    if (key === SETTINGS_KEY || key === MIGRATION_KEY) continue
-    if (!key.includes("_chapter_")) continue
-    const raw = localStorage.getItem(key)
-    if (!raw) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      continue
-    }
-    if (isChapter(parsed)) continue
-    if (!isLegacyChapter(parsed)) continue
-    const parentId = titleToId.get(parsed.Syosetu_title) ?? newId()
-    const id = newId()
-    const migrated: Chapter = {
-      id,
-      syosetuId: parentId,
-      Syosetu_title: parsed.Syosetu_title,
-      title: parsed.title,
-      page: parsed.page,
-      honbun: parsed.honbun,
-      updatedAt: now,
-      dirty: true,
-    }
-    localStorage.setItem(chapterKey(parsed.Syosetu_title, parsed.page), JSON.stringify(migrated))
-  }
-
-  localStorage.setItem(MIGRATION_KEY, String(now))
-  migrationDone = true
 }
 
 export function initStorage(): void {
   if (initStarted) return
   initStarted = true
-  migrateIfNeeded()
   rebuildFromStorage()
 }
 
 function ensureInit(): void {
   if (initStarted) return
   initStarted = true
-  if (!migrationDone) migrateIfNeeded()
   rebuildFromStorage()
 }
 
@@ -394,6 +282,7 @@ export function setChapter(
     updatedAt: input.updatedAt ?? now,
     deleted: input.deleted ?? false,
     dirty: input.dirty ?? true,
+    honbunClearRequested: input.honbunClearRequested ?? existing?.honbunClearRequested ?? false,
   }
   if (existing && (existing.syosetuId !== next.syosetuId || existing.page !== next.page)) {
     unindexChapter(existing)
@@ -463,6 +352,22 @@ export function deleteChapter(Syosetu_title: string, page: number): void {
   writeChapter(tombstone)
 }
 
+export function deleteSyosetu(title: string): void {
+  ensureInit()
+  const s = getSyosetu(title)
+  if (!s) return
+
+  const now = Date.now()
+  setSyosetu({ ...s, deleted: true, updatedAt: now, dirty: true })
+
+  // Keep child tombstones locally so an offline work deletion can be retried
+  // and cleaned up only after the dedicated delete request succeeds.
+  for (const c of listAllChapters()) {
+    if (c.syosetuId !== s.id || c.deleted) continue
+    setChapter({ ...c, deleted: true, updatedAt: now, dirty: true })
+  }
+}
+
 export function listChapters(Syosetu_title: string): Chapter[] {
   ensureInit()
   const list = index.chaptersBySyosetuId.get(
@@ -512,7 +417,7 @@ export function markChapterClean(id: string): void {
   const c = index.chapterById.get(id)
   if (!c) return
   if (c.dirty) index.dirtyChapterCount--
-  const clean: Chapter = { ...c, dirty: false }
+  const clean: Chapter = { ...c, dirty: false, honbunClearRequested: false }
   index.chapterById.set(id, clean)
   const list = index.chaptersBySyosetuId.get(clean.syosetuId) ?? []
   index.chaptersBySyosetuId.set(
@@ -530,7 +435,7 @@ export function removeDeletedTombstones(): void {
     if (s.deleted) toRemove.push(s.title)
   }
   for (const c of index.chapterById.values()) {
-    if (c.deleted) toRemove.push(chapterKey(c.Syosetu_title, c.page))
+    if (c.deleted) toRemove.push(c.Syosetu_title + "_chapter_" + c.page)
   }
   for (const key of toRemove) removeFromStorage(key)
   rebuildFromStorage()
@@ -558,7 +463,7 @@ function clearUserData(): void {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
     if (!key) continue
-    if (key === SETTINGS_KEY || key === MIGRATION_KEY) continue
+    if (key === SETTINGS_KEY) continue
     const raw = localStorage.getItem(key)
     if (!raw) continue
     let parsed: unknown
@@ -631,5 +536,3 @@ export function pendingPushCount(): number {
   ensureInit()
   return index.dirtySyosetuCount + index.dirtyChapterCount
 }
-
-export { parseTitleFromChapterKey }

@@ -59,6 +59,7 @@ export default function WorkPage(props: { title: string }) {
     if (!confirm(`チャプター「${chapter.title}」を削除しますか？`)) return
     deleteChapter(chapter.Syosetu_title, chapter.page)
     refresh()
+    void autoPushOnNavigate()
   }
 
   const goHome = () => navigate("")

@@ -185,7 +185,12 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
   const persistHonbun = () => {
     const c = chapter()
     if (!c) return
-    setChapter({ ...c, honbun: honbun() })
+    const nextHonbun = honbun()
+    setChapter({
+      ...c,
+      honbun: nextHonbun,
+      honbunClearRequested: nextHonbun === "" && c.honbun !== "",
+    })
     setHonbunDirty(false)
   }
 
@@ -257,6 +262,10 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
     document.removeEventListener("keydown", handleKeydown)
     clearHonbunTimer()
     clearPlotTimer()
+    // Route changes can unmount the editor before a textarea blur is
+    // delivered. Persist the current signals before starting auto-push.
+    if (honbunDirty()) persistHonbun()
+    if (plotDirty()) persistPlot()
     if (hasPendingPush()) void autoPushOnNavigate()
   })
 
