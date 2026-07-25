@@ -147,6 +147,9 @@ export default function SettingsPage() {
     const pulled = r.pulledSyosetu + r.pulledChapters
     const serverWins = r.serverWinsSyosetu + r.serverWinsChapters
     const parts: string[] = []
+    parts.push(r.uploadRequestSent ? "upload実行" : "upload対象なし")
+    if (r.deleteRequestsSent > 0) parts.push(`削除送信${r.deleteRequestsSent}件`)
+    if (r.downloadRequestSent) parts.push("download実行")
     if (pushed > 0) parts.push(`送信${pushed}件`)
     if (pulled > 0) parts.push(`受信${pulled}件`)
     if (serverWins > 0) parts.push(`競合${serverWins}件はサーバー側を採用`)

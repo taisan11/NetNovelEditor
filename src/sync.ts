@@ -25,6 +25,9 @@ export interface SyncState {
 }
 
 export interface SyncResult {
+  uploadRequestSent: boolean
+  deleteRequestsSent: number
+  downloadRequestSent: boolean
   pushedSyosetu: number
   pushedChapters: number
   pulledSyosetu: number
@@ -205,6 +208,8 @@ function toClientChapter(c: ServerChapter, fallbackSyosetuTitle: string): Chapte
 
 export interface PushDirtyResult {
   ok: boolean
+  uploadRequestSent: boolean
+  deleteRequestsSent: number
   pushedSyosetu: number
   pushedChapters: number
   serverWinsSyosetu: number
@@ -212,7 +217,7 @@ export interface PushDirtyResult {
   error?: string
 }
 
-export async function pushDirty(): Promise<PushDirtyResult> {
+export async function uploadSync(): Promise<PushDirtyResult> {
   const dirtyS = listDirtySyosetu()
   const dirtyC = listDirtyChapters()
   const deletedS = dirtyS.filter((s) => s.deleted)
@@ -223,6 +228,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
     recomputePending()
     return {
       ok: true,
+      uploadRequestSent: false,
+      deleteRequestsSent: 0,
       pushedSyosetu: 0,
       pushedChapters: 0,
       serverWinsSyosetu: 0,
@@ -243,6 +250,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
     if (!deleteResult.ok) {
       return {
         ok: false,
+        uploadRequestSent: false,
+        deleteRequestsSent: deletedSyosetu + deletedChapters,
         pushedSyosetu: deletedSyosetu,
         pushedChapters: deletedChapters,
         serverWinsSyosetu: 0,
@@ -261,6 +270,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
     if (!deleteResult.ok) {
       return {
         ok: false,
+        uploadRequestSent: false,
+        deleteRequestsSent: deletedSyosetu + deletedChapters,
         pushedSyosetu: deletedSyosetu,
         pushedChapters: deletedChapters,
         serverWinsSyosetu: 0,
@@ -276,6 +287,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
     recomputePending()
     return {
       ok: true,
+      uploadRequestSent: false,
+      deleteRequestsSent: deletedSyosetu + deletedChapters,
       pushedSyosetu: deletedSyosetu,
       pushedChapters: deletedChapters,
       serverWinsSyosetu: 0,
@@ -312,6 +325,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
   if (!res.ok) {
     return {
       ok: false,
+      uploadRequestSent: true,
+      deleteRequestsSent: deletedSyosetu + deletedChapters,
       pushedSyosetu: deletedSyosetu,
       pushedChapters: deletedChapters,
       serverWinsSyosetu: 0,
@@ -351,6 +366,8 @@ export async function pushDirty(): Promise<PushDirtyResult> {
   recomputePending()
   return {
     ok: true,
+    uploadRequestSent: true,
+    deleteRequestsSent: deletedSyosetu + deletedChapters,
     pushedSyosetu,
     pushedChapters,
     serverWinsSyosetu,
@@ -366,7 +383,7 @@ export interface PullResult {
   error?: string
 }
 
-export async function pullSnapshot(): Promise<PullResult> {
+export async function downloadSync(): Promise<PullResult> {
   const lastSyncAt = state.lastSyncAt
   const since = lastSyncAt === null ? "" : `?since=${Math.max(0, lastSyncAt - 1)}`
   const res = await fetchJson<SnapshotResponse>(`/api/sync/snapshot${since}`)
@@ -447,20 +464,33 @@ export async function pullSnapshot(): Promise<PullResult> {
 }
 
 export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
-  if (state.status === "syncing") {
-    return { ok: false, error: "すでに同期中です" }
+  if (syncInFlight) return syncInFlight
+  const run = runFullSync()
+  syncInFlight = run
+  try {
+    return await run
+  } finally {
+    if (syncInFlight === run) syncInFlight = null
   }
+}
+
+let syncInFlight: Promise<{ ok: boolean; result?: SyncResult; error?: string }> | null = null
+
+async function runFullSync(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
+  // If a route change started an automatic upload, wait for it and then still
+  // perform the download phase requested by the manual sync.
+  if (autoPushInFlight) await autoPushInFlight
   setState({ status: "syncing", lastError: null })
   const startedAt = Date.now()
 
-  const push = await pushDirty()
+  const push = await uploadSync()
   if (!push.ok) {
-    const errorMsg = push.error ?? "pushに失敗しました"
+    const errorMsg = push.error ?? "uploadに失敗しました"
     setState({ status: "error", lastError: errorMsg })
     return { ok: false, error: errorMsg }
   }
 
-  const pull = await pullSnapshot()
+  const pull = await downloadSync()
   if (!pull.ok) {
     const errorMsg = pull.error ?? "pullに失敗しました"
     setState({ status: "error", lastError: errorMsg })
@@ -468,6 +498,9 @@ export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; err
   }
 
   const result: SyncResult = {
+    uploadRequestSent: push.uploadRequestSent,
+    deleteRequestsSent: push.deleteRequestsSent,
+    downloadRequestSent: true,
     pushedSyosetu: push.pushedSyosetu,
     pushedChapters: push.pushedChapters,
     pulledSyosetu: pull.pulledSyosetu,
@@ -487,26 +520,29 @@ export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; err
   return { ok: true, result }
 }
 
-let autoPushInFlight = false
+let autoPushInFlight: Promise<void> | null = null
 
 export async function autoPushOnNavigate(): Promise<void> {
-  if (autoPushInFlight) return
+  if (autoPushInFlight) return autoPushInFlight
   if (state.status === "syncing") return
   if (pendingPushCount() === 0) {
     recomputePending()
     return
   }
-  autoPushInFlight = true
-  setState({ status: "syncing" })
-  try {
-    const push = await pushDirty()
+  const run = (async () => {
+    setState({ status: "syncing" })
+    const push = await uploadSync()
     if (!push.ok) {
-      setState({ status: "error", lastError: push.error ?? "pushに失敗しました" })
+      setState({ status: "error", lastError: push.error ?? "uploadに失敗しました" })
     } else {
       setState({ status: "idle", lastError: null })
     }
+  })()
+  autoPushInFlight = run
+  try {
+    await run
   } finally {
-    autoPushInFlight = false
+    if (autoPushInFlight === run) autoPushInFlight = null
   }
 }
 
