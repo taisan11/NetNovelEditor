@@ -286,6 +286,9 @@ export function setChapter(
   }
   if (existing && (existing.syosetuId !== next.syosetuId || existing.page !== next.page)) {
     unindexChapter(existing)
+    // The previous dirty count is adjusted below for every replacement.
+    if (existing.dirty) index.dirtyChapterCount++
+    removeFromStorage(existing.Syosetu_title + "_chapter_" + existing.page)
   }
   index.chapterById.set(next.id, next)
   const list = index.chaptersBySyosetuId.get(next.syosetuId) ?? []
@@ -348,7 +351,7 @@ export function deleteChapter(Syosetu_title: string, page: number): void {
   const list = index.chaptersBySyosetuId.get(tombstone.syosetuId) ?? []
   list.push(tombstone)
   index.chaptersBySyosetuId.set(tombstone.syosetuId, list)
-  if (!c.dirty) index.dirtyChapterCount++
+  index.dirtyChapterCount++
   writeChapter(tombstone)
 }
 
@@ -427,18 +430,24 @@ export function markChapterClean(id: string): void {
   writeChapter(clean)
 }
 
-export function removeDeletedTombstones(): void {
+export function removeAcknowledgedTombstones(works: Syosetu[], chapters: Chapter[]): void {
   ensureInit()
-  if (typeof localStorage === "undefined") return
-  const toRemove: string[] = []
-  for (const s of index.syosetuById.values()) {
-    if (s.deleted) toRemove.push(s.title)
+  // Only remove the exact versions sent to the server. A new deletion may have
+  // happened while a request was in flight and must remain pending.
+  for (const s of works) {
+    if (s.deleted && index.syosetuById.get(s.id) === s) {
+      removeFromStorage(s.title)
+      index.syosetuById.delete(s.id)
+      if (index.syosetuByTitle.get(s.title) === s) index.syosetuByTitle.delete(s.title)
+      if (s.dirty) index.dirtySyosetuCount--
+    }
   }
-  for (const c of index.chapterById.values()) {
-    if (c.deleted) toRemove.push(c.Syosetu_title + "_chapter_" + c.page)
+  for (const c of chapters) {
+    if (c.deleted && index.chapterById.get(c.id) === c) {
+      removeFromStorage(c.Syosetu_title + "_chapter_" + c.page)
+      unindexChapter(c)
+    }
   }
-  for (const key of toRemove) removeFromStorage(key)
-  rebuildFromStorage()
 }
 
 export function nextChapterPage(Syosetu_title: string): number {

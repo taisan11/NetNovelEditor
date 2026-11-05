@@ -2,13 +2,14 @@ import {
   listDirtySyosetu,
   listDirtyChapters,
   listSyosetu,
-  listChapters,
+  listAllSyosetuIncludingDirty,
+  listAllChapters,
   getChapterById,
   markSyosetuClean,
   markChapterClean,
   setSyosetu,
   setChapter,
-  removeDeletedTombstones,
+  removeAcknowledgedTombstones,
   pendingPushCount,
   type Syosetu,
   type Chapter,
@@ -283,7 +284,7 @@ export async function uploadSync(): Promise<PushDirtyResult> {
   }
 
   if (liveS.length === 0 && liveC.length === 0) {
-    removeDeletedTombstones()
+    removeAcknowledgedTombstones(deletedS, deletedC)
     recomputePending()
     return {
       ok: true,
@@ -341,6 +342,8 @@ export async function uploadSync(): Promise<PushDirtyResult> {
   let serverWinsChapters = 0
 
   for (const r of res.data.results.syosetu) {
+    const sent = liveS.find((s) => s.id === r.id)
+    if (!sent || !listAllSyosetuIncludingDirty().includes(sent)) continue
     if (r.winner === "client") {
       markSyosetuClean(r.id)
       pushedSyosetu++
@@ -350,6 +353,8 @@ export async function uploadSync(): Promise<PushDirtyResult> {
     }
   }
   for (const r of res.data.results.chapters) {
+    const sent = liveC.find((c) => c.id === r.id)
+    if (!sent || !listAllChapters().includes(sent)) continue
     if (r.winner === "client") {
       markChapterClean(r.id)
       pushedChapters++
@@ -362,7 +367,7 @@ export async function uploadSync(): Promise<PushDirtyResult> {
     }
   }
 
-  removeDeletedTombstones()
+  removeAcknowledgedTombstones(deletedS, deletedC)
   recomputePending()
   return {
     ok: true,
@@ -384,9 +389,9 @@ export interface PullResult {
 }
 
 export async function downloadSync(): Promise<PullResult> {
-  const lastSyncAt = state.lastSyncAt
-  const since = lastSyncAt === null ? "" : `?since=${Math.max(0, lastSyncAt - 1)}`
-  const res = await fetchJson<SnapshotResponse>(`/api/sync/snapshot${since}`)
+  // updatedAt originates on client devices, so it cannot safely serve as a
+  // server-side change cursor (clock skew and delayed uploads can hide rows).
+  const res = await fetchJson<SnapshotResponse>("/api/sync/snapshot")
   if (!res.ok) {
     return { ok: false, pulledSyosetu: 0, pulledChapters: 0, error: res.error }
   }
@@ -399,13 +404,8 @@ export async function downloadSync(): Promise<PullResult> {
     }
   }
 
-  const localSyosetu = new Map(listSyosetu().map((s) => [s.id, s]))
-  const localChapters = new Map<string, Chapter>()
-  for (const s of listSyosetu()) {
-    for (const c of listChapters(s.title)) {
-      localChapters.set(c.id, c)
-    }
-  }
+  const localSyosetu = new Map(listAllSyosetuIncludingDirty().map((s) => [s.id, s]))
+  const localChapters = new Map(listAllChapters().map((c) => [c.id, c]))
   const titleBySyosetuId = new Map<string, string>()
   for (const s of listSyosetu()) titleBySyosetuId.set(s.id, s.title)
 
@@ -415,7 +415,7 @@ export async function downloadSync(): Promise<PullResult> {
   for (const server of res.data.syosetu) {
     const local = localSyosetu.get(server.id)
     if (server.deleted) {
-      if (local) {
+      if (local && server.updatedAt > local.updatedAt) {
         setSyosetu({ ...toClientSyosetu(server), dirty: false })
         pulledSyosetu++
       }
@@ -440,7 +440,7 @@ export async function downloadSync(): Promise<PullResult> {
     if (!syosetuTitle) continue
 
     if (server.deleted) {
-      if (local) {
+      if (local && server.updatedAt > local.updatedAt) {
         setChapter({ ...toClientChapter(server, syosetuTitle), dirty: false })
         pulledChapters++
       }

@@ -10,18 +10,18 @@
     "db:mg": "drizzle-kit push"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.4",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.32",
-    "lucide-solid": "^1.26.0",
-    "solid-js": "^1.9.14"
+    "@libsql/client": "^0.18.0",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.16",
+    "lucide-solid": "^1.68.0",
+    "solid-js": "^1.9.18"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.47.0",
-    "@types/node": "^26.1.1",
-    "drizzle-kit": "^0.31.10",
+    "@cloudflare/vite-plugin": "^1.67.0",
+    "@types/node": "^26.6.6",
+    "drizzle-kit": "^0.31.11",
     "typescript": "~7.0.2",
-    "vite": "^8.1.5",
-    "vite-plugin-solid": "^2.11.13"
+    "vite": "^8.3.5",
+    "vite-plugin-solid": "^2.11.15"
   }
 }
