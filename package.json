@@ -12,8 +12,8 @@
   "dependencies": {
     "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.4",
-    "hono": "^4.13.16",
-    "lucide-solid": "^1.68.0",
+    "hono": "^4.13.17",
+    "lucide-solid": "^1.70.0",
     "solid-js": "^1.9.18"
   },
   "devDependencies": {
@@ -21,7 +21,7 @@
     "@types/node": "^26.6.6",
     "drizzle-kit": "^0.31.11",
     "typescript": "~7.0.2",
-    "vite": "^8.3.5",
+    "vite": "^8.3.6",
     "vite-plugin-solid": "^2.11.15"
   }
 }
