@@ -5,6 +5,16 @@ import { resetStorage, seedRecords } from "./helpers";
 
 beforeEach(resetStorage);
 
+test("saving unchanged content keeps its revision and does not queue an upload", () => {
+  const { work, chapter } = seedRecords();
+  expect(storage.saveSyosetu({ ...work })).toBe(work);
+  expect(storage.saveChapter({ ...chapter })).toBe(chapter);
+  expect(storage.pendingPushCount()).toBe(0);
+  const edited = storage.saveChapter({ ...chapter, honbun: "edited" });
+  expect(storage.saveChapter({ ...edited })).toBe(edited);
+  expect(storage.pendingPushCount()).toBe(1);
+});
+
 test("local saves advance timestamps and mark synchronized records dirty", () => {
   const { work, chapter } = seedRecords();
   const future = Date.now() + 100_000;

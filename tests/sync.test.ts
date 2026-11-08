@@ -12,10 +12,13 @@ import {
   uploadSync,
 } from "../src/sync";
 import { resetStorage, seedRecords } from "./helpers";
+import { createSyncClock } from "./sync-clock";
+import { setSettings } from "../src/settings";
 
 const originalFetch = globalThis.fetch;
 beforeEach(() => {
   resetStorage();
+  setSyncAccount("reset-account");
   setSyncAccount(null);
 });
 afterEach(() => {
@@ -318,27 +321,7 @@ test("responses from a previous account are ignored", async () => {
 });
 
 test("automatic sync registers wake-up events and polling and removes them on cleanup", async () => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-  const windowTarget = new EventTarget();
-  const documentTarget = new EventTarget();
-  const clearInterval = mock(() => {});
-  let poll!: () => void;
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: Object.assign(windowTarget, {
-      setInterval: mock((callback: () => void, delay: number) => {
-        expect(delay).toBe(90_000);
-        poll = callback;
-        return 1;
-      }),
-      clearInterval,
-    }),
-  });
-  Object.defineProperty(globalThis, "document", {
-    configurable: true,
-    value: Object.assign(documentTarget, { visibilityState: "visible" }),
-  });
+  const clock = createSyncClock();
   globalThis.fetch = mock(async (input) =>
     Response.json(
       String(input) === "/api/auth/me"
@@ -350,35 +333,36 @@ test("automatic sync registers wake-up events and polling and removes them on cl
   try {
     stop = startAutoSync();
     await autoSyncNow();
-    for (const trigger of [
-      () => windowTarget.dispatchEvent(new Event("focus")),
-      () => windowTarget.dispatchEvent(new Event("online")),
-      () => documentTarget.dispatchEvent(new Event("visibilitychange")),
-      poll,
-    ]) {
-      const before = (globalThis.fetch as ReturnType<typeof mock>).mock.calls.length;
-      trigger();
-      await autoSyncNow();
-      expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(before + 2);
-    }
-    Object.assign(documentTarget, { visibilityState: "hidden" });
-    const before = (globalThis.fetch as ReturnType<typeof mock>).mock.calls.length;
-    poll();
+    clock.window.dispatchEvent(new Event("focus"));
+    clock.window.dispatchEvent(new Event("online"));
+    clock.document.dispatchEvent(new Event("visibilitychange"));
     await autoSyncNow();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(clock.nextDelay()).toBe(180_000);
+    await clock.advance(180_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3); // Cached authentication.
+    Object.assign(clock.document, { visibilityState: "hidden" });
+    clock.document.dispatchEvent(new Event("visibilitychange"));
+    await clock.settle();
+    const before = (globalThis.fetch as ReturnType<typeof mock>).mock.calls.length;
+    await clock.advance(1_000_000);
     expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(before);
+    expect(clock.pendingTimers()).toBe(0);
+    Object.assign(clock.document, { visibilityState: "visible" });
+    clock.document.dispatchEvent(new Event("visibilitychange"));
+    await autoSyncNow();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(before + 2); // Expired auth + snapshot.
     stop();
-    Object.assign(documentTarget, { visibilityState: "visible" });
-    windowTarget.dispatchEvent(new Event("focus"));
-    windowTarget.dispatchEvent(new Event("online"));
-    documentTarget.dispatchEvent(new Event("visibilitychange"));
-    expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls.length).toBe(before);
-    expect(clearInterval).toHaveBeenCalledWith(1);
+    await clock.advance(1_000_000);
+    clock.window.dispatchEvent(new Event("focus"));
+    clock.window.dispatchEvent(new Event("online"));
+    clock.document.dispatchEvent(new Event("visibilitychange"));
+    await clock.settle();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(before + 2);
+    expect(clock.pendingTimers()).toBe(0);
   } finally {
     stop?.();
-    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-    else Reflect.deleteProperty(globalThis, "window");
-    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
-    else Reflect.deleteProperty(globalThis, "document");
+    clock.restore();
   }
 });
 
@@ -432,7 +416,7 @@ test("duplicate and unknown upload results are ignored after acknowledging the e
   expect(storage.pendingPushCount()).toBe(0);
 });
 
-test("failed chapter deletion retains all tombstones for retry", async () => {
+test("work deletion acknowledges child tombstones with just one request", async () => {
   const { work, chapter } = seedRecords();
   storage.deleteSyosetu(work.title);
   const calls: string[] = [];
@@ -443,27 +427,34 @@ test("failed chapter deletion retains all tombstones for retry", async () => {
       ? Response.json({ error: "retry later" }, { status: 500 })
       : Response.json({ ok: true });
   }) as typeof fetch;
-  const failed = await uploadSync();
-  expect(failed).toMatchObject({
-    ok: false,
+  expect(await uploadSync()).toMatchObject({
+    ok: true,
     deleteRequestsSent: 1,
     pushedSyosetu: 1,
-    pushedChapters: 0,
-    error: "retry later",
+    pushedChapters: 1,
   });
-  expect(storage.pendingPushCount()).toBe(2);
-  expect(calls).toEqual([`/api/sync/syosetu/${work.id}`, `/api/sync/chapter/${chapter.id}`]);
+  expect(calls).toEqual([`/api/sync/syosetu/${work.id}`]);
+  expect(storage.pendingPushCount()).toBe(0);
+  expect(storage.listAllSyosetuIncludingDirty()).toEqual([]);
+  expect(storage.listAllChapters()).toEqual([]);
+});
 
+test("a failed standalone chapter deletion retains its tombstone for retry", async () => {
+  const { work } = seedRecords();
+  storage.deleteChapter(work.title, 1);
+  globalThis.fetch = mock(async () => Response.json({ error: "retry later" }, { status: 500 })) as typeof fetch;
+  expect(await uploadSync()).toMatchObject({ ok: false, deleteRequestsSent: 0, error: "retry later" });
+  expect(storage.pendingPushCount()).toBe(1);
   globalThis.fetch = mock(async () => Response.json({ ok: true })) as typeof fetch;
   expect(await uploadSync()).toMatchObject({
     ok: true,
     uploadRequestSent: false,
-    deleteRequestsSent: 2,
-    pushedSyosetu: 1,
+    deleteRequestsSent: 1,
+    pushedSyosetu: 0,
     pushedChapters: 1,
   });
   expect(storage.pendingPushCount()).toBe(0);
-  expect(storage.listAllSyosetuIncludingDirty()).toEqual([]);
+  expect(storage.listAllSyosetuIncludingDirty()).toHaveLength(1);
   expect(storage.listAllChapters()).toEqual([]);
 });
 
@@ -552,4 +543,344 @@ test("download creates live records but does not create unknown tombstones", asy
   expect(storage.listAllSyosetuIncludingDirty()).toHaveLength(1);
   expect(storage.listChapters("live")).toHaveLength(1);
   expect(storage.pendingPushCount()).toBe(0);
+});
+
+function mockSyncServer() {
+  const fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/auth/me") return Response.json({ user: { id: "account" } });
+    if (init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      return Response.json({
+        results: {
+          syosetu: body.syosetu.map((s: { id: string }) => ({ id: s.id, winner: "client" })),
+          chapters: body.chapters.map((c: { id: string }) => ({ id: c.id, winner: "client" })),
+        },
+        settings: body.settings,
+      });
+    }
+    return Response.json({ serverTime: Date.now(), syosetu: [], chapters: [] });
+  });
+  globalThis.fetch = fetch as typeof globalThis.fetch;
+  return fetch;
+}
+
+test("nearby route and wake events reuse a recent download; manual sync still forces a request", async () => {
+  const clock = createSyncClock();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  try {
+    await autoSyncNow();
+    await autoSyncOnNavigate();
+    await autoSyncNow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await clock.advance(59_999);
+    await autoSyncOnNavigate();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await clock.advance(1);
+    await autoSyncOnNavigate();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await syncNow();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls.every(([url]) => url === "/api/sync/snapshot")).toBe(true);
+  } finally {
+    clock.restore();
+  }
+});
+
+test("automatic sync batches saved edits and settings into the latest upload", async () => {
+  const clock = createSyncClock();
+  const { work, chapter } = seedRecords();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    storage.saveChapter({ ...chapter, honbun: "first" });
+    await clock.advance(1_000);
+    storage.saveChapter({ ...chapter, honbun: "latest" });
+    storage.saveSyosetu({ ...work, plot: "latest plot" });
+    setSettings({ fontSize: 20, lineHeight: 1.7, theme: "dark", verticalWriting: false });
+    await clock.advance(1_999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await clock.advance(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const body = JSON.parse(String(fetch.mock.calls[1]?.[1]?.body));
+    expect(body.chapters[0].honbun).toBe("latest");
+    expect(body.syosetu[0].plot).toBe("latest plot");
+    expect(body.settings.values.theme).toBe("dark");
+    expect(storage.pendingPushCount()).toBe(0);
+    expect(clock.nextDelay()).toBe(90_000);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("continuous saves cannot postpone uploading indefinitely", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    storage.saveChapter({ ...chapter, honbun: "0" });
+    for (let i = 1; i <= 14; i++) {
+      await clock.advance(1_000);
+      storage.saveChapter({ ...chapter, honbun: String(i) });
+    }
+    await clock.advance(999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await clock.advance(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).chapters[0].honbun).toBe("14");
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("quiet polling backs off to fifteen minutes and resets after local changes", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.settle();
+    for (const delay of [180_000, 360_000, 720_000, 900_000, 900_000]) {
+      expect(clock.nextDelay()).toBe(delay);
+      await clock.advance(delay);
+    }
+    storage.saveChapter({ ...chapter, honbun: "changed" });
+    await clock.advance(5_000);
+    expect(storage.pendingPushCount()).toBe(0);
+    expect(clock.nextDelay()).toBe(90_000);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("failures back off even across focus events; manual retry bypasses the wait", async () => {
+  const clock = createSyncClock();
+  setSyncAccount("account");
+  globalThis.fetch = mock(async () => Response.json({ error: "unavailable" }, { status: 503 })) as typeof fetch;
+  const stop = startAutoSync();
+  try {
+    await clock.settle();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(clock.nextDelay()).toBe(30_000);
+    clock.window.dispatchEvent(new Event("focus"));
+    await autoSyncNow();
+    await autoSyncOnNavigate();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    await clock.advance(30_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(clock.nextDelay()).toBe(60_000);
+    expect((await syncNow()).ok).toBe(false);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(clock.nextDelay()).toBe(120_000);
+    const fetch = mockSyncServer();
+    expect((await syncNow()).ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(getSyncState().status).toBe("idle");
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("signed-out automatic checks reuse authentication for five minutes", async () => {
+  const clock = createSyncClock();
+  globalThis.fetch = mock(async () => Response.json({ user: null })) as typeof fetch;
+  const stop = startAutoSync();
+  try {
+    await clock.settle();
+    await autoSyncNow();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(clock.nextDelay()).toBe(300_000);
+    await clock.advance(300_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("edits saved while hidden wait until the page becomes visible", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    Object.assign(clock.document, { visibilityState: "hidden" });
+    clock.document.dispatchEvent(new Event("visibilitychange"));
+    storage.saveChapter({ ...chapter, honbun: "hidden edit" });
+    await clock.advance(300_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(storage.pendingPushCount()).toBe(1);
+    Object.assign(clock.document, { visibilityState: "visible" });
+    clock.document.dispatchEvent(new Event("visibilitychange"));
+    await clock.settle();
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "/api/sync/snapshot", "/api/auth/me", "/api/sync/push", "/api/sync/snapshot",
+    ]);
+    expect(storage.pendingPushCount()).toBe(0);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("a newer edit made during an automatic upload is sent by a follow-up batch", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  const uploaded: string[] = [];
+  let finishFirst!: () => void;
+  const firstResponse = new Promise<void>((resolve) => { finishFirst = resolve; });
+  globalThis.fetch = mock(async (_url, init) => {
+    if (init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      uploaded.push(body.chapters[0].honbun);
+      if (uploaded.length === 1) await firstResponse;
+      return Response.json({ results: { syosetu: [], chapters: [{ id: chapter.id, winner: "client" }] } });
+    }
+    return Response.json({ serverTime: Date.now(), syosetu: [], chapters: [] });
+  }) as typeof fetch;
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    storage.saveChapter({ ...chapter, honbun: "first" });
+    await clock.advance(2_000);
+    expect(uploaded).toEqual(["first"]);
+    storage.saveChapter({ ...chapter, honbun: "during upload" });
+    await clock.advance(10_000);
+    expect(uploaded).toEqual(["first"]);
+    finishFirst();
+    await clock.settle();
+    expect(storage.pendingPushCount()).toBe(1);
+    await clock.advance(2_000);
+    expect(uploaded).toEqual(["first", "during upload"]);
+    expect(storage.pendingPushCount()).toBe(0);
+  } finally {
+    finishFirst();
+    await clock.settle();
+    stop();
+    clock.restore();
+  }
+});
+
+test("offline saves are kept and sent together when connectivity returns", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    clock.navigator.onLine = false;
+    storage.saveChapter({ ...chapter, honbun: "offline edit" });
+    await clock.advance(60_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(storage.pendingPushCount()).toBe(1);
+    clock.navigator.onLine = true;
+    clock.window.dispatchEvent(new Event("online"));
+    await clock.settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(storage.pendingPushCount()).toBe(0);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test.each([0, 401])("failed upload with status %s avoids a redundant download", async (status) => {
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  storage.saveChapter({ ...chapter, honbun: "pending" });
+  globalThis.fetch = mock(async () => {
+    if (status === 0) throw new Error("connection lost");
+    return Response.json({ error: "expired" }, { status });
+  }) as typeof fetch;
+  expect((await syncNow()).ok).toBe(false);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  expect(storage.pendingPushCount()).toBe(1);
+});
+
+test("account switching away and back still invalidates an old download", async () => {
+  const { work, chapter } = seedRecords();
+  setSyncAccount("account");
+  globalThis.fetch = mock(async () => {
+    setSyncAccount("other-account");
+    setSyncAccount("account");
+    return Response.json({
+      serverTime: 200,
+      syosetu: [{ ...work, createdAt: 1, updatedAt: 200 }],
+      chapters: [{ ...chapter, createdAt: 1, honbun: "stale", updatedAt: 200 }],
+    });
+  }) as typeof fetch;
+  expect((await downloadSync()).ok).toBe(false);
+  expect(storage.getChapterById(chapter.id)?.honbun).toBe(chapter.honbun);
+});
+
+test("successful deletions are not sent again if a later deletion fails", async () => {
+  const { work, chapter } = seedRecords();
+  const other = storage.setSyosetu({ title: "other", pages: 0, plot: "" });
+  storage.deleteSyosetu(other.title);
+  storage.deleteChapter(work.title, 1);
+  globalThis.fetch = mock(async (url) => String(url).includes("/chapter/")
+    ? Response.json({ error: "retry" }, { status: 500 })
+    : Response.json({ ok: true })) as typeof fetch;
+  expect((await uploadSync()).ok).toBe(false);
+  expect(storage.listDirtySyosetu()).toEqual([]);
+  expect(storage.pendingPushCount()).toBe(1);
+  globalThis.fetch = mock(async () => Response.json({ ok: true })) as typeof fetch;
+  expect((await uploadSync()).ok).toBe(true);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  expect((globalThis.fetch as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe(`/api/sync/chapter/${chapter.id}`);
+});
+
+test("manual synchronization clears the old batch deadline before a later edit", async () => {
+  const clock = createSyncClock();
+  const { chapter } = seedRecords();
+  setSyncAccount("account");
+  const fetch = mockSyncServer();
+  const stop = startAutoSync();
+  try {
+    await clock.advance(5_000);
+    storage.saveChapter({ ...chapter, honbun: "first" });
+    await syncNow();
+    await clock.advance(20_000);
+    storage.saveChapter({ ...chapter, honbun: "second" });
+    expect(clock.nextDelay()).toBe(2_000);
+    await clock.advance(1_999);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await clock.advance(1);
+    expect(fetch).toHaveBeenCalledTimes(5);
+  } finally {
+    stop();
+    clock.restore();
+  }
+});
+
+test("stopping during an authentication request does not recreate a timer", async () => {
+  const clock = createSyncClock();
+  let finish!: (response: Response) => void;
+  globalThis.fetch = mock(() => new Promise<Response>((resolve) => { finish = resolve; })) as typeof fetch;
+  const stop = startAutoSync();
+  try {
+    stop();
+    finish(Response.json({ user: null }));
+    await clock.settle();
+    expect(clock.pendingTimers()).toBe(0);
+    await clock.advance(1_000_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    stop();
+    clock.restore();
+  }
 });

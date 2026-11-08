@@ -13,7 +13,8 @@ import {
   type Syosetu,
   type Chapter,
 } from "./storage";
-import { acceptSettings, getPendingSettings, type SettingsRecord } from "./settings";
+import { acceptSettings, getPendingSettings, getSettingsRecord, type SettingsRecord } from "./settings";
+import { subscribeLocalChanges } from "./localChanges";
 import type { PlanInfo } from "../shared/plans";
 
 export type SyncStatus = "idle" | "syncing" | "error";
@@ -45,6 +46,28 @@ export interface SyncResult {
 
 const LAST_SYNC_KEY = "netnoveleditor_last_sync_v1";
 let syncAccountId: string | null = null;
+let accountVersion = 0;
+
+const AUTH_CACHE_MS = 5 * 60_000;
+const REMOTE_FRESH_MS = 60_000;
+const MIN_SYNC_GAP_MS = 5_000;
+const POLL_MIN_MS = 90_000;
+const POLL_MAX_MS = 15 * 60_000;
+const EDIT_DEBOUNCE_MS = 2_000;
+const EDIT_MAX_WAIT_MS = 15_000;
+let authCheckedAt: number | null = null;
+let lastSuccessfulCheckAt: number | null = null;
+let lastAttemptAt: number | null = null;
+let pollInterval = POLL_MIN_MS;
+let failures = 0;
+let retryAt = 0;
+let dirtySince: number | null = null;
+let dirtyDueAt: number | null = null;
+const scheduleListeners = new Set<() => void>();
+
+function reschedule(): void {
+  for (const listener of scheduleListeners) listener();
+}
 
 function lastSyncStorageKey(): string {
   return `${LAST_SYNC_KEY}_${encodeURIComponent(syncAccountId ?? "anonymous")}`;
@@ -75,9 +98,20 @@ let state: SyncState = {
 };
 
 export function setSyncAccount(accountId: string | null): void {
+  if (accountId !== null) authCheckedAt = Date.now();
   if (syncAccountId === accountId) return;
   syncAccountId = accountId;
-  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null, lastError: null, lastResult: null, plan: null });
+  accountVersion++;
+  authCheckedAt = accountId === null ? null : Date.now();
+  lastSuccessfulCheckAt = null;
+  lastAttemptAt = null;
+  pollInterval = POLL_MIN_MS;
+  failures = 0;
+  retryAt = 0;
+  dirtySince = dirtyDueAt = null;
+  setState({ status: "idle", lastSyncAt: accountId ? loadLastSyncAt() : null, lastError: null, lastResult: null, plan: null });
+  recomputePending();
+  reschedule();
 }
 
 function emit(): void {
@@ -124,6 +158,7 @@ async function fetchJson<T>(
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
     if (!res.ok) {
+      if (res.status === 401) authCheckedAt = null;
       let msg = `HTTP ${res.status}`;
       try {
         const data = (await res.json()) as { error?: string };
@@ -222,10 +257,12 @@ export interface PushDirtyResult {
   serverWinsSyosetu: number;
   serverWinsChapters: number;
   error?: string;
+  errorStatus?: number;
 }
 
 export async function uploadSync(): Promise<PushDirtyResult> {
   const accountId = syncAccountId;
+  const version = accountVersion;
   const settings = getPendingSettings(accountId);
   const dirtyS = listDirtySyosetu();
   const dirtyC = listDirtyChapters();
@@ -242,57 +279,71 @@ export async function uploadSync(): Promise<PushDirtyResult> {
     serverWinsSyosetu: 0,
     serverWinsChapters: 0,
   };
-  // Save preferences separately: an over-quota novel upload must not block them.
-  if (settings && accountId) {
+  // Usually preferences share the novel request. Retry them separately only if
+  // the novel batch is rejected (e.g. quota), so they can still be synchronized.
+  const saveSettings = async (): Promise<{ error: string; errorStatus?: number } | null> => {
+    if (!settings || !accountId) return null;
     result.uploadRequestSent = true;
     const saved = await fetchJson<PushResponse>("/api/sync/push", {
       method: "POST",
       body: JSON.stringify({ syosetu: [], chapters: [], settings }),
     });
-    if (!saved.ok || accountId !== syncAccountId) {
-      return { ...result, ok: false, error: !saved.ok ? saved.error : "同期中にアカウントが変更されました" };
+    if (!saved.ok || version !== accountVersion) {
+      return !saved.ok
+        ? { error: saved.error, errorStatus: saved.status }
+        : { error: "同期中にアカウントが変更されました" };
     }
     if (saved.data.settings) acceptSettings(saved.data.settings, accountId, settings);
-  }
-  if (dirtyS.length === 0 && dirtyC.length === 0) {
-    recomputePending();
-    return result;
-  }
+    return null;
+  };
 
-  // Deletions use dedicated idempotent endpoints. Keep local tombstones until
-  // all requests succeed so offline deletes can be retried safely.
+  // Deletions use dedicated idempotent endpoints. Keep each local tombstone
+  // until its request succeeds so offline deletes can be retried safely.
+  const deletedParents = new Set<string>();
   for (const [kind, records] of [
     ["syosetu", deletedS],
     ["chapter", deletedC],
   ] as const) {
     for (const record of records) {
+      if (kind === "chapter" && deletedParents.has((record as Chapter).syosetuId)) continue;
       const deleted = await fetchJson<{ ok: boolean }>(
         `/api/sync/${kind}/${encodeURIComponent(record.id)}`,
         { method: "DELETE" },
       );
-      if (!deleted.ok || accountId !== syncAccountId) {
+      if (!deleted.ok || version !== accountVersion) {
         return {
           ...result,
           ok: false,
           error: !deleted.ok ? deleted.error : "同期中にアカウントが変更されました",
+          errorStatus: !deleted.ok ? deleted.status : undefined,
         };
       }
       result.deleteRequestsSent++;
-      if (kind === "syosetu") result.pushedSyosetu++;
-      else result.pushedChapters++;
+      if (kind === "syosetu") {
+        // The work endpoint already deletes its chapters in one transaction.
+        deletedParents.add(record.id);
+        const children = deletedC.filter((c) => c.syosetuId === record.id);
+        result.pushedSyosetu++;
+        result.pushedChapters += children.length;
+        removeAcknowledgedTombstones([record as Syosetu], children);
+      } else {
+        result.pushedChapters++;
+        removeAcknowledgedTombstones([], [record as Chapter]);
+      }
     }
   }
 
   if (liveS.length === 0 && liveC.length === 0) {
-    removeAcknowledgedTombstones(deletedS, deletedC);
+    const error = await saveSettings();
     recomputePending();
-    return result;
+    return error ? { ...result, ok: false, ...error } : result;
   }
 
   result.uploadRequestSent = true;
   const res = await fetchJson<PushResponse>("/api/sync/push", {
     method: "POST",
     body: JSON.stringify({
+      ...(settings && accountId ? { settings } : {}),
       syosetu: liveS.map((s) => ({
         id: s.id,
         title: s.title,
@@ -317,10 +368,14 @@ export async function uploadSync(): Promise<PushDirtyResult> {
   });
 
   if (!res.ok) {
-    return { ...result, ok: false, error: res.error };
+    if (version === accountVersion && (res.status === 403 || res.status === 413)) {
+      await saveSettings();
+    }
+    recomputePending();
+    return { ...result, ok: false, error: res.error, errorStatus: res.status };
   }
 
-  if (accountId !== syncAccountId) {
+  if (version !== accountVersion) {
     return {
       ...result,
       ok: false,
@@ -332,6 +387,7 @@ export async function uploadSync(): Promise<PushDirtyResult> {
 
   const sentSyosetu = new Map(liveS.map((s) => [s.id, s]));
   const sentChapters = new Map(liveC.map((c) => [c.id, c]));
+  if (settings && accountId && res.data.settings) acceptSettings(res.data.settings, accountId, settings);
 
   for (const r of res.data.results.syosetu) {
     const sent = sentSyosetu.get(r.id);
@@ -357,7 +413,6 @@ export async function uploadSync(): Promise<PushDirtyResult> {
     }
   }
 
-  removeAcknowledgedTombstones(deletedS, deletedC);
   recomputePending();
   return result;
 }
@@ -379,13 +434,14 @@ function shouldApplyServerRecord(
 
 export async function downloadSync(): Promise<PullResult> {
   const accountId = syncAccountId;
+  const version = accountVersion;
   // updatedAt originates on client devices, so it cannot safely serve as a
   // server-side change cursor (clock skew and delayed uploads can hide rows).
   const res = await fetchJson<SnapshotResponse>("/api/sync/snapshot");
   if (!res.ok) {
     return { ok: false, pulledSyosetu: 0, pulledChapters: 0, error: res.error };
   }
-  if (accountId !== syncAccountId) {
+  if (version !== accountVersion) {
     return {
       ok: false,
       pulledSyosetu: 0,
@@ -441,35 +497,61 @@ export async function downloadSync(): Promise<PullResult> {
 
 export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
   if (syncInFlight) return syncInFlight;
+  const version = accountVersion;
+  const hadPending = hasPendingPush();
+  const settingsRevision = getSettingsRecord()?.updatedAt;
+  lastAttemptAt = Date.now();
   const run = runFullSync().catch((err: unknown) => {
     const error = err instanceof Error ? err.message : String(err);
-    setState({ status: "error", lastError: error });
+    if (version === accountVersion) setState({ status: "error", lastError: error });
     return { ok: false as const, error };
   });
   syncInFlight = run;
   try {
-    return await run;
+    const outcome = await run;
+    if (version === accountVersion) {
+      if (outcome.ok) {
+        lastSuccessfulCheckAt = Date.now();
+        failures = 0;
+        retryAt = 0;
+        const result = outcome.result;
+        const changed = hadPending || settingsRevision !== getSettingsRecord()?.updatedAt ||
+          (result && result.pulledSyosetu + result.pulledChapters > 0);
+        pollInterval = changed ? POLL_MIN_MS : Math.min(POLL_MAX_MS, pollInterval * 2);
+        if (!hasPendingPush()) dirtySince = dirtyDueAt = null;
+      } else {
+        failures++;
+        retryAt = Date.now() + Math.min(POLL_MAX_MS, 30_000 * 2 ** Math.min(failures - 1, 5));
+      }
+    }
+    return outcome;
   } finally {
     if (syncInFlight === run) syncInFlight = null;
+    reschedule();
   }
 }
 
 let syncInFlight: Promise<{ ok: boolean; result?: SyncResult; error?: string }> | null = null;
 
 async function runFullSync(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
+  const version = accountVersion;
   setState({ status: "syncing", lastError: null });
   const startedAt = Date.now();
 
   const push = await uploadSync();
+  if (version !== accountVersion) return { ok: false, error: "同期中にアカウントが変更されました" };
   if (!push.ok) {
-    // Quotas and upload failures must not prevent reading existing cloud data.
-    await downloadSync();
+    // Quotas must not prevent reading cloud data. But an unreachable server or
+    // expired session does not need another request that will fail the same way.
+    if (push.errorStatus !== 0 && push.errorStatus !== 401) await downloadSync();
+    if (version !== accountVersion) return { ok: false, error: "同期中にアカウントが変更されました" };
     const errorMsg = push.error ?? "uploadに失敗しました";
     setState({ status: "error", lastError: errorMsg });
     return { ok: false, error: errorMsg };
   }
 
   const pull = await downloadSync();
+  if (version !== accountVersion) return { ok: false, error: "同期中にアカウントが変更されました" };
   if (!pull.ok) {
     const errorMsg = pull.error ?? "pullに失敗しました";
     setState({ status: "error", lastError: errorMsg });
@@ -504,46 +586,91 @@ function isOffline(): boolean {
 }
 
 export async function autoSyncOnNavigate(): Promise<void> {
-  if (syncAccountId === null || isOffline()) return;
+  if (syncAccountId !== null) await autoSyncNow();
+}
+
+async function syncIfNeeded(): Promise<void> {
+  if (syncAccountId === null || cannotAutoSync()) return;
+  const now = Date.now();
+  if (now < retryAt || (lastAttemptAt !== null && now - lastAttemptAt < MIN_SYNC_GAP_MS)) return;
+  if (!hasPendingPush() && lastSuccessfulCheckAt !== null && now - lastSuccessfulCheckAt < REMOTE_FRESH_MS) return;
   await syncNow();
 }
 
 let autoSyncInFlight: Promise<void> | null = null;
 
+function cannotAutoSync(): boolean {
+  return isOffline() || (typeof document !== "undefined" && document.visibilityState === "hidden");
+}
+
 export async function autoSyncNow(): Promise<void> {
   if (autoSyncInFlight) return autoSyncInFlight;
-  if (isOffline() || (typeof document !== "undefined" && document.visibilityState === "hidden"))
-    return;
-  const accountId = syncAccountId;
+  if (cannotAutoSync() || Date.now() < retryAt) return;
+  const version = accountVersion;
   const run = (async () => {
-    const res = await fetchJson<{ user: { id: string } | null }>("/api/auth/me");
-    if (!res.ok) return;
-    const nextAccountId = res.data.user?.id ?? null;
-    if (accountId !== syncAccountId && nextAccountId !== syncAccountId) return;
-    setSyncAccount(nextAccountId);
-    await autoSyncOnNavigate();
+    if (authCheckedAt === null || Date.now() - authCheckedAt >= AUTH_CACHE_MS) {
+      const res = await fetchJson<{ user: { id: string } | null }>("/api/auth/me");
+      if (version !== accountVersion) return;
+      if (!res.ok) {
+        failures++;
+        retryAt = Date.now() + Math.min(POLL_MAX_MS, 30_000 * 2 ** Math.min(failures - 1, 5));
+        return;
+      }
+      setSyncAccount(res.data.user?.id ?? null);
+      authCheckedAt = Date.now();
+      if (syncAccountId === null) {
+        failures = 0;
+        retryAt = 0;
+      }
+    }
+    await syncIfNeeded();
   })();
   autoSyncInFlight = run;
   try {
     await run;
   } finally {
     if (autoSyncInFlight === run) autoSyncInFlight = null;
+    reschedule();
   }
 }
 
-// Full synchronization shares one in-flight promise with manual sync and route
-// changes. Hidden/offline tabs do not poll, and every listener is removable.
+// One adaptive timer batches edits and backs off quiet or failing connections.
+// Wake-up events share the same freshness/cooldown checks as route changes.
 export function startAutoSync(): () => void {
-  const run = () => {
-    void autoSyncNow();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  const schedule = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    if (stopped || cannotAutoSync()) return;
+    const now = Date.now();
+    let dueAt: number;
+    if (syncAccountId === null) {
+      dueAt = authCheckedAt === null ? now : authCheckedAt + AUTH_CACHE_MS;
+    } else if (hasPendingPush()) {
+      dueAt = dirtyDueAt ?? now + EDIT_DEBOUNCE_MS;
+    } else {
+      dueAt = lastSuccessfulCheckAt === null ? now : lastSuccessfulCheckAt + pollInterval;
+    }
+    dueAt = Math.max(dueAt, retryAt, (lastAttemptAt ?? -MIN_SYNC_GAP_MS) + MIN_SYNC_GAP_MS);
+    timer = setTimeout(() => {
+      timer = null;
+      dirtySince = dirtyDueAt = null;
+      run();
+    }, Math.max(0, dueAt - now));
   };
+  const run = () => {
+    if (!stopped) void autoSyncNow().finally(schedule);
+  };
+  scheduleListeners.add(schedule);
   window.addEventListener("focus", run);
   window.addEventListener("online", run);
   document.addEventListener("visibilitychange", run);
-  const timer = window.setInterval(run, 90_000);
   run();
   return () => {
-    window.clearInterval(timer);
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+    scheduleListeners.delete(schedule);
     window.removeEventListener("focus", run);
     window.removeEventListener("online", run);
     document.removeEventListener("visibilitychange", run);
@@ -552,4 +679,14 @@ export function startAutoSync(): () => void {
 
 export function noteLocalChange(): void {
   recomputePending();
+  if (hasPendingPush()) {
+    const now = Date.now();
+    dirtySince ??= now;
+    dirtyDueAt = Math.min(now + EDIT_DEBOUNCE_MS, dirtySince + EDIT_MAX_WAIT_MS);
+  } else {
+    dirtySince = dirtyDueAt = null;
+  }
+  reschedule();
 }
+
+subscribeLocalChanges(noteLocalChange);

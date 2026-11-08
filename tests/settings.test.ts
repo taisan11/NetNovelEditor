@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { resetStorage } from "./helpers";
+import { resetStorage, seedRecords } from "./helpers";
 import { acceptSettings, getPendingSettings, getSettings, getSettingsRecord, setSettings, SETTINGS_KEY, subscribeSettings } from "../src/settings";
 import { downloadSync, getSyncState, setSyncAccount, syncNow, uploadSync } from "../src/sync";
 import * as storage from "../src/storage";
@@ -87,6 +87,29 @@ test("a change made while settings are uploading stays pending", async () => {
   expect(getPendingSettings("settings-account")?.values.fontSize).toBe(24);
 });
 
+test("settings and novel changes share one upload request", async () => {
+  const { work, chapter } = seedRecords();
+  setSettings(values);
+  storage.saveSyosetu({ ...work, plot: "edited" });
+  storage.saveChapter({ ...chapter, honbun: "edited" });
+  globalThis.fetch = mock(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    expect(body.settings.values).toEqual(values);
+    expect(body.syosetu).toHaveLength(1);
+    expect(body.chapters).toHaveLength(1);
+    return Response.json({
+      results: {
+        syosetu: [{ id: work.id, winner: "client" }],
+        chapters: [{ id: chapter.id, winner: "client" }],
+      },
+      settings: body.settings,
+    });
+  }) as typeof fetch;
+  expect((await uploadSync()).ok).toBe(true);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  expect(getSyncState().pendingPush).toBe(0);
+});
+
 test("a change made while downloading is not replaced by a remote setting", async () => {
   globalThis.fetch = mock(async () => {
     setSettings({ ...values, fontSize: 24 });
@@ -137,9 +160,9 @@ test("quota errors preserve local novels but still sync settings and download cl
       plan: { id: "free", usage: { works: 10, storageBytes: 100 } },
     });
     const body = JSON.parse(String(init?.body));
-    return body.settings
-      ? Response.json({ results: { syosetu: [], chapters: [] }, settings: body.settings })
-      : Response.json({ error: "plan limit" }, { status: 403 });
+    return body.syosetu.length > 0
+      ? Response.json({ error: "plan limit" }, { status: 403 })
+      : Response.json({ results: { syosetu: [], chapters: [] }, settings: body.settings });
   }) as typeof fetch;
   expect((await syncNow()).ok).toBe(false);
   expect(calls).toEqual(["/api/sync/push", "/api/sync/push", "/api/sync/snapshot"]);

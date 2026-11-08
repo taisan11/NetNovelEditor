@@ -1,4 +1,5 @@
 import { SETTINGS_KEY } from "./settings";
+import { notifyLocalChange } from "./localChanges";
 import { MAX_TITLE_LENGTH, MAX_PLOT_LENGTH, MAX_HONBUN_LENGTH } from "../server/limits";
 
 // 型定義
@@ -249,6 +250,7 @@ export function setSyosetu(
   if (prevDirty) index.dirtySyosetuCount--;
   if (next.dirty) index.dirtySyosetuCount++;
   writeSyosetu(next);
+  if (next.dirty) notifyLocalChange();
   return next;
 }
 
@@ -266,6 +268,10 @@ export function saveSyosetu(input: Parameters<typeof setSyosetu>[0]): Syosetu {
   const current = input.id
     ? index.syosetuById.get(input.id)
     : index.syosetuByTitle.get(input.title);
+  if (
+    current && !current.deleted && !input.deleted &&
+    current.title === input.title && current.pages === input.pages && current.plot === input.plot
+  ) return current;
   return setSyosetu({
     ...input,
     updatedAt: Math.max(Date.now(), (current?.updatedAt ?? 0) + 1, (input.updatedAt ?? 0) + 1),
@@ -334,6 +340,7 @@ export function setChapter(
   }
   indexChapter(next);
   writeChapter(next);
+  if (next.dirty) notifyLocalChange();
   return next;
 }
 
@@ -349,6 +356,12 @@ export function saveChapter(input: Parameters<typeof setChapter>[0]): Chapter {
   const current = input.id
     ? index.chapterById.get(input.id)
     : findChapterBySyosetuAndPage(input.Syosetu_title, input.page);
+  if (
+    current && !current.deleted && !input.deleted && current.title === input.title &&
+    current.Syosetu_title === input.Syosetu_title && current.page === input.page &&
+    (input.syosetuId === undefined || current.syosetuId === input.syosetuId) &&
+    current.honbun === input.honbun
+  ) return current;
   return setChapter({
     ...input,
     updatedAt: Math.max(Date.now(), (current?.updatedAt ?? 0) + 1, (input.updatedAt ?? 0) + 1),
@@ -662,6 +675,7 @@ export function importBackup(json: string): ImportResult {
     throw err;
   }
   rebuildFromStorage();
+  notifyLocalChange();
   return { works: works.length, chapters: chapters.length };
 }
 

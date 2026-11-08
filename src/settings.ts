@@ -1,4 +1,5 @@
 import { isSettingsRecord, type Settings, type SettingsRecord, type Theme } from "../shared/settings";
+import { notifyLocalChange } from "./localChanges";
 export type { Settings, SettingsRecord, Theme } from "../shared/settings";
 
 export const SETTINGS_KEY = "netnoveleditor_settings_v1";
@@ -49,6 +50,7 @@ export function setSettings(settings: Settings): void {
   const previous = getSettingsRecord();
   if (previous && JSON.stringify(previous.values) === JSON.stringify(settings)) return;
   saveRecord({ values: settings, updatedAt: Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1) });
+  notifyLocalChange();
 }
 
 export function getSettingsRecord(): SettingsRecord | null {
