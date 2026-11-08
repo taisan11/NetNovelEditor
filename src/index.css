@@ -206,9 +206,13 @@ button:disabled {
   cursor: not-allowed;
 }
 
+input,
+textarea {
+  font-size: 16px;
+}
+
 input[type="text"] {
   padding: 8px 10px;
-  font-size: 14px;
   border: 1px solid var(--button-border);
   border-radius: 4px;
   width: 320px;
@@ -327,7 +331,7 @@ input[type="range"] {
 
 .editor {
   width: 100%;
-  font-size: var(--editor-font-size);
+  font-size: max(16px, var(--editor-font-size));
   line-height: var(--editor-line-height);
   padding: 14px;
   border: 1px solid var(--border);

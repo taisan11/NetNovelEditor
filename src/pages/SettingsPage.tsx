@@ -234,7 +234,7 @@ export default function SettingsPage() {
         <input
           id="font-size-input"
           type="range"
-          min="12"
+          min="16"
           max="28"
           step="1"
           value={fontSize()}

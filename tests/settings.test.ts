@@ -25,6 +25,31 @@ test("old flat settings migrate without assigning a new revision on every read",
   expect(getSettingsRecord()?.updatedAt).toBe(1);
 });
 
+test("saved font sizes below 16px are clamped without changing their revision", () => {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...values, fontSize: 12, updatedAt: 100 }));
+  expect(getSettings().fontSize).toBe(16);
+  expect(getSettingsRecord()?.updatedAt).toBe(100);
+});
+
+test("local font size changes cannot save values below 16px", () => {
+  setSettings({ ...values, fontSize: 12 });
+  expect(getSettings().fontSize).toBe(16);
+  expect(JSON.parse(localStorage.getItem(SETTINGS_KEY)!).fontSize).toBe(16);
+});
+
+test("cloud font sizes below 16px are clamped before notifying the settings screen", () => {
+  const listener = mock(() => {});
+  const unsubscribe = subscribeSettings(listener);
+  try {
+    expect(acceptSettings({ values: { ...values, fontSize: 12 }, updatedAt: 100 }, "settings-account")).toBe(true);
+    expect(getSettings().fontSize).toBe(16);
+    expect(listener).toHaveBeenCalledWith({ ...values, fontSize: 16 });
+    expect(getPendingSettings("settings-account")).toBeNull();
+  } finally {
+    unsubscribe();
+  }
+});
+
 test("local setting changes have increasing revisions and account-scoped acknowledgements", () => {
   setSettings(values);
   const sent = getSettingsRecord()!;

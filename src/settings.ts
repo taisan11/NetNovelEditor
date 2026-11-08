@@ -23,7 +23,7 @@ export function getSettings(): Settings {
     return {
       fontSize:
         typeof parsed.fontSize === "number" && parsed.fontSize >= 10 && parsed.fontSize <= 32
-          ? parsed.fontSize
+          ? Math.max(16, parsed.fontSize)
           : DEFAULT_SETTINGS.fontSize,
       lineHeight:
         typeof parsed.lineHeight === "number" &&
@@ -69,11 +69,12 @@ export function getPendingSettings(accountId: string | null): SettingsRecord | n
 }
 
 function saveRecord(record: SettingsRecord): void {
+  const values = { ...record.values, fontSize: Math.max(16, record.values.fontSize) };
   // Keep the existing flat format readable by older clients. Revision and values
   // share one write, so a storage failure cannot acknowledge unsaved settings.
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...record.values, updatedAt: record.updatedAt }));
-  applySettings(record.values);
-  for (const listener of listeners) listener(record.values);
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...values, updatedAt: record.updatedAt }));
+  applySettings(values);
+  for (const listener of listeners) listener(values);
 }
 
 export function acceptSettings(record: SettingsRecord, accountId: string, sent?: SettingsRecord): boolean {
