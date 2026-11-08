@@ -103,7 +103,7 @@ interface IndexState {
   syosetuById: Map<string, Syosetu>
   syosetuByTitle: Map<string, Syosetu>
   chapterById: Map<string, Chapter>
-  chaptersBySyosetuId: Map<string, Chapter[]>
+  chaptersBySyosetuId: Map<string, Map<string, Chapter>>
   dirtySyosetuCount: number
   dirtyChapterCount: number
 }
@@ -121,9 +121,43 @@ function createIndex(): IndexState {
 
 let index: IndexState = createIndex()
 let initStarted = false
+const IMPORT_JOURNAL_KEY = "netnoveleditor_import_journal_v1"
+
+interface ImportJournal {
+  kind: "netnoveleditor-import"
+  previous: [string, string][]
+  targetKeys: string[]
+}
+
+function recoverPendingImport(): void {
+  if (typeof localStorage === "undefined") return
+  const raw = localStorage.getItem(IMPORT_JOURNAL_KEY)
+  if (!raw) return
+  const journal = JSON.parse(raw) as ImportJournal
+  // A legacy work may have this title. Never mistake it for a recovery log.
+  if (journal?.kind !== "netnoveleditor-import") return
+  if (
+    !Array.isArray(journal.previous) ||
+    !journal.previous.every((entry) => Array.isArray(entry) && entry.length === 2 && entry.every((v) => typeof v === "string")) ||
+    !Array.isArray(journal.targetKeys) ||
+    !journal.targetKeys.every((key) => typeof key === "string") ||
+    [...journal.targetKeys, ...journal.previous.map(([key]) => key)]
+      .some((key) => key === SETTINGS_KEY || key === IMPORT_JOURNAL_KEY)
+  ) throw new Error("復元前データの読み込みに失敗しました")
+  for (const key of new Set([...journal.targetKeys, ...journal.previous.map(([key]) => key)])) {
+    localStorage.removeItem(key)
+  }
+  for (const [key, value] of journal.previous) localStorage.setItem(key, value)
+  localStorage.removeItem(IMPORT_JOURNAL_KEY)
+}
 
 function rebuildFromStorage(): void {
+  recoverPendingImport()
   index = createIndex()
+  for (const { record } of storedRecords()) indexRawRecord(record)
+}
+
+function* storedRecords(): Generator<{ key: string; raw: string; record: Syosetu | Chapter }> {
   if (typeof localStorage === "undefined") return
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
@@ -137,39 +171,32 @@ function rebuildFromStorage(): void {
     } catch {
       continue
     }
-    indexRawRecord(key, parsed)
+    if (isSyosetu(parsed) || isChapter(parsed)) yield { key, raw, record: parsed }
   }
 }
 
-function indexRawRecord(key: string, parsed: unknown): void {
+function indexRawRecord(parsed: Syosetu | Chapter): void {
   if (isSyosetu(parsed)) {
     index.syosetuById.set(parsed.id, parsed)
     index.syosetuByTitle.set(parsed.title, parsed)
     if (parsed.dirty) index.dirtySyosetuCount++
     return
   }
-  if (isChapter(parsed)) {
-    index.chapterById.set(parsed.id, parsed)
-    const list = index.chaptersBySyosetuId.get(parsed.syosetuId) ?? []
-    list.push(parsed)
-    index.chaptersBySyosetuId.set(parsed.syosetuId, list)
-    if (parsed.dirty) index.dirtyChapterCount++
-    return
-  }
-  // Unknown localStorage values are ignored.
-  void key
+  indexChapter(parsed)
 }
 
 export function initStorage(): void {
   if (initStarted) return
-  initStarted = true
   rebuildFromStorage()
+  initStarted = true
 }
 
 function ensureInit(): void {
-  if (initStarted) return
-  initStarted = true
-  rebuildFromStorage()
+  initStorage()
+}
+
+function chapterStorageKey(c: Pick<Chapter, "Syosetu_title" | "page">): string {
+  return c.Syosetu_title + "_chapter_" + c.page
 }
 
 function writeSyosetu(s: Syosetu): void {
@@ -179,7 +206,7 @@ function writeSyosetu(s: Syosetu): void {
 
 function writeChapter(c: Chapter): void {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(c.Syosetu_title + "_chapter_" + c.page, JSON.stringify(c))
+  localStorage.setItem(chapterStorageKey(c), JSON.stringify(c))
 }
 
 function removeFromStorage(key: string): void {
@@ -229,6 +256,18 @@ export function getSyosetu(title: string): Syosetu | null {
   const s = index.syosetuByTitle.get(title)
   if (s && !s.deleted) return s
   return null
+}
+
+// Local saves must not inherit synchronization metadata from a loaded record.
+// Keep the low-level setters for applying server records with their timestamps.
+export function saveSyosetu(input: Parameters<typeof setSyosetu>[0]): Syosetu {
+  ensureInit()
+  const current = input.id ? index.syosetuById.get(input.id) : index.syosetuByTitle.get(input.title)
+  return setSyosetu({
+    ...input,
+    updatedAt: Math.max(Date.now(), (current?.updatedAt ?? 0) + 1, (input.updatedAt ?? 0) + 1),
+    dirty: true,
+  })
 }
 
 export function getSyosetuById(id: string): Syosetu | null {
@@ -286,17 +325,11 @@ export function setChapter(
   }
   if (existing && (existing.syosetuId !== next.syosetuId || existing.page !== next.page)) {
     unindexChapter(existing)
-    // The previous dirty count is adjusted below for every replacement.
-    if (existing.dirty) index.dirtyChapterCount++
-    removeFromStorage(existing.Syosetu_title + "_chapter_" + existing.page)
+    removeFromStorage(chapterStorageKey(existing))
+  } else if (prevDirty) {
+    index.dirtyChapterCount--
   }
-  index.chapterById.set(next.id, next)
-  const list = index.chaptersBySyosetuId.get(next.syosetuId) ?? []
-  const filtered = list.filter((c) => c.id !== next.id)
-  filtered.push(next)
-  index.chaptersBySyosetuId.set(next.syosetuId, filtered)
-  if (prevDirty) index.dirtyChapterCount--
-  if (next.dirty) index.dirtyChapterCount++
+  indexChapter(next)
   writeChapter(next)
   return next
 }
@@ -308,24 +341,52 @@ function findChapterBySyosetuAndPage(title: string, page: number): Chapter | nul
   return null
 }
 
+export function saveChapter(input: Parameters<typeof setChapter>[0]): Chapter {
+  ensureInit()
+  const current = input.id ? index.chapterById.get(input.id) : findChapterBySyosetuAndPage(input.Syosetu_title, input.page)
+  return setChapter({
+    ...input,
+    updatedAt: Math.max(Date.now(), (current?.updatedAt ?? 0) + 1, (input.updatedAt ?? 0) + 1),
+    dirty: true,
+    honbunClearRequested: input.honbun === "" && (
+      input.honbunClearRequested === true || current?.honbunClearRequested === true ||
+      (current != null && current.honbun !== "")
+    ),
+  })
+}
+
 function unindexChapter(c: Chapter): void {
   index.chapterById.delete(c.id)
   const list = index.chaptersBySyosetuId.get(c.syosetuId)
   if (list) {
-    index.chaptersBySyosetuId.set(
-      c.syosetuId,
-      list.filter((x) => x.id !== c.id),
-    )
+    list.delete(c.id)
+    if (list.size === 0) index.chaptersBySyosetuId.delete(c.syosetuId)
   }
   if (c.dirty) index.dirtyChapterCount--
 }
 
+function indexChapter(c: Chapter): void {
+  index.chapterById.set(c.id, c)
+  let list = index.chaptersBySyosetuId.get(c.syosetuId)
+  if (!list) {
+    list = new Map()
+    index.chaptersBySyosetuId.set(c.syosetuId, list)
+  }
+  list.set(c.id, c)
+  if (c.dirty) index.dirtyChapterCount++
+}
+
+// Compare exact revisions, including tombstones, without copying all records.
+export function isCurrentRecord(record: Syosetu | Chapter): boolean {
+  ensureInit()
+  return "syosetuId" in record
+    ? index.chapterById.get(record.id) === record
+    : index.syosetuById.get(record.id) === record
+}
+
 export function getChapter(Syosetu_title: string, page: number): Chapter | null {
   ensureInit()
-  for (const c of index.chapterById.values()) {
-    if (c.Syosetu_title === Syosetu_title && c.page === page && !c.deleted) return c
-  }
-  return null
+  return findChapterBySyosetuAndPage(Syosetu_title, page)
 }
 
 export function getChapterById(id: string): Chapter | null {
@@ -339,20 +400,7 @@ export function deleteChapter(Syosetu_title: string, page: number): void {
   ensureInit()
   const c = getChapter(Syosetu_title, page)
   if (!c) return
-  const now = Date.now()
-  const tombstone: Chapter = {
-    ...c,
-    deleted: true,
-    updatedAt: now,
-    dirty: true,
-  }
-  unindexChapter(c)
-  index.chapterById.set(tombstone.id, tombstone)
-  const list = index.chaptersBySyosetuId.get(tombstone.syosetuId) ?? []
-  list.push(tombstone)
-  index.chaptersBySyosetuId.set(tombstone.syosetuId, list)
-  index.dirtyChapterCount++
-  writeChapter(tombstone)
+  setChapter({ ...c, deleted: true, updatedAt: Date.now(), dirty: true })
 }
 
 export function deleteSyosetu(title: string): void {
@@ -365,18 +413,18 @@ export function deleteSyosetu(title: string): void {
 
   // Keep child tombstones locally so an offline work deletion can be retried
   // and cleaned up only after the dedicated delete request succeeds.
-  for (const c of listAllChapters()) {
-    if (c.syosetuId !== s.id || c.deleted) continue
+  const chapters = index.chaptersBySyosetuId.get(s.id)
+  for (const c of chapters?.values() ?? []) {
+    if (c.deleted) continue
     setChapter({ ...c, deleted: true, updatedAt: now, dirty: true })
   }
 }
 
 export function listChapters(Syosetu_title: string): Chapter[] {
   ensureInit()
-  const list = index.chaptersBySyosetuId.get(
-    getSyosetu(Syosetu_title)?.id ?? "",
-  ) ?? []
-  const result = list.filter((c) => !c.deleted)
+  const list = index.chaptersBySyosetuId.get(getSyosetu(Syosetu_title)?.id ?? "")
+  const result: Chapter[] = []
+  if (list) for (const c of list.values()) if (!c.deleted) result.push(c)
   result.sort((a, b) => a.page - b.page)
   return result
 }
@@ -421,12 +469,7 @@ export function markChapterClean(id: string): void {
   if (!c) return
   if (c.dirty) index.dirtyChapterCount--
   const clean: Chapter = { ...c, dirty: false, honbunClearRequested: false }
-  index.chapterById.set(id, clean)
-  const list = index.chaptersBySyosetuId.get(clean.syosetuId) ?? []
-  index.chaptersBySyosetuId.set(
-    clean.syosetuId,
-    list.map((x) => (x.id === id ? clean : x)),
-  )
+  indexChapter(clean)
   writeChapter(clean)
 }
 
@@ -444,7 +487,7 @@ export function removeAcknowledgedTombstones(works: Syosetu[], chapters: Chapter
   }
   for (const c of chapters) {
     if (c.deleted && index.chapterById.get(c.id) === c) {
-      removeFromStorage(c.Syosetu_title + "_chapter_" + c.page)
+      removeFromStorage(chapterStorageKey(c))
       unindexChapter(c)
     }
   }
@@ -452,10 +495,10 @@ export function removeAcknowledgedTombstones(works: Syosetu[], chapters: Chapter
 
 export function nextChapterPage(Syosetu_title: string): number {
   ensureInit()
-  const list = index.chaptersBySyosetuId.get(getSyosetu(Syosetu_title)?.id ?? "") ?? []
-  if (list.length === 0) return 1
+  const list = index.chaptersBySyosetuId.get(getSyosetu(Syosetu_title)?.id ?? "")
+  if (!list) return 1
   let max = 0
-  for (const c of list) if (c.page > max) max = c.page
+  for (const c of list.values()) if (c.page > max) max = c.page
   return max + 1
 }
 
@@ -466,26 +509,10 @@ export interface BackupData {
   chapters: Chapter[]
 }
 
-function clearUserData(): void {
-  if (typeof localStorage === "undefined") return
-  const toRemove: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (!key) continue
-    if (key === SETTINGS_KEY) continue
-    const raw = localStorage.getItem(key)
-    if (!raw) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      continue
-    }
-    if (isSyosetu(parsed) || isChapter(parsed)) {
-      toRemove.push(key)
-    }
-  }
-  for (const key of toRemove) removeFromStorage(key)
+function userDataEntries(): [string, string][] {
+  const entries: [string, string][] = []
+  for (const { key, raw } of storedRecords()) entries.push([key, raw])
+  return entries
 }
 
 export function exportBackup(): string {
@@ -522,20 +549,81 @@ export function importBackup(json: string): ImportResult {
   if (data.version !== 1) {
     throw new Error(`対応していないバージョンです: ${data.version}`)
   }
-  const works: Syosetu[] = Array.isArray(data.works) ? data.works.filter(isSyosetu) : []
-  const chapters: Chapter[] = Array.isArray(data.chapters)
-    ? data.chapters.filter(isChapter)
-    : []
-  clearUserData()
-  for (const w of works) {
-    writeSyosetu({ ...w, title: truncate(w.title, MAX_TITLE), plot: truncate(w.plot, MAX_PLOT) })
+  const validTimestamp = (value: number) => Number.isSafeInteger(value) && value >= 0 && value < 8_640_000_000_000_000
+  const validTitle = (value: string) => value.trim().length > 0 && value.length <= MAX_TITLE
+  const validFlags = (value: Syosetu | Chapter) =>
+    (value.deleted === undefined || value.deleted === false) &&
+    (value.dirty === undefined || typeof value.dirty === "boolean")
+  if (
+    !Array.isArray(data.works) || !Array.isArray(data.chapters) ||
+    !data.works.every((w) => isSyosetu(w) && w.id.length > 0 && validTitle(w.title) &&
+      Number.isSafeInteger(w.pages) && w.pages >= 0 && w.plot.length <= MAX_PLOT &&
+      validTimestamp(w.updatedAt) && validFlags(w)) ||
+    !data.chapters.every((c) => isChapter(c) && c.id.length > 0 && validTitle(c.title) &&
+      Number.isSafeInteger(c.page) && c.page > 0 && c.honbun.length <= MAX_HONBUN &&
+      validTimestamp(c.updatedAt) && validFlags(c) &&
+      (c.honbunClearRequested === undefined || typeof c.honbunClearRequested === "boolean"))
+  ) throw new Error("バックアップに不正な作品・話データが含まれています")
+
+  const works = data.works
+  const chapters = data.chapters
+  const workById = new Map(works.map((w) => [w.id, w]))
+  if (workById.size !== works.length || new Set(chapters.map((c) => c.id)).size !== chapters.length) {
+    throw new Error("バックアップ内のIDが重複しています")
   }
   for (const c of chapters) {
-    writeChapter({
-      ...c,
-      title: truncate(c.title, MAX_TITLE),
-      honbun: truncate(c.honbun, MAX_HONBUN),
+    if (workById.get(c.syosetuId)?.title !== c.Syosetu_title) {
+      throw new Error("話と作品の紐づけが不正です")
+    }
+  }
+
+  if (typeof localStorage === "undefined") throw new Error("この環境では復元できません")
+  ensureInit()
+  if (localStorage.getItem(IMPORT_JOURNAL_KEY) !== null) {
+    throw new Error("復元用の保存キーが既存データと衝突しています")
+  }
+  const previous = userDataEntries()
+  const previousKeys = new Set(previous.map(([key]) => key))
+  const entries = new Map<string, string>()
+  const addEntry = (key: string, value: Syosetu | Chapter) => {
+    if (key === SETTINGS_KEY || key === IMPORT_JOURNAL_KEY || entries.has(key) ||
+      (localStorage.getItem(key) !== null && !previousKeys.has(key))) {
+      throw new Error("作品名や話番号が重複、または保存用のキーと衝突しています")
+    }
+    entries.set(key, JSON.stringify(value))
+  }
+  const now = Date.now()
+  for (const w of works) {
+    addEntry(w.title, {
+      ...w,
+      updatedAt: Math.max(now, w.updatedAt + 1, (index.syosetuById.get(w.id)?.updatedAt ?? 0) + 1),
+      deleted: false,
+      dirty: true,
     })
+  }
+  for (const c of chapters) {
+    addEntry(chapterStorageKey(c), {
+      ...c,
+      updatedAt: Math.max(now, c.updatedAt + 1, (index.chapterById.get(c.id)?.updatedAt ?? 0) + 1),
+      deleted: false,
+      dirty: true,
+      honbunClearRequested: c.honbun === "",
+    })
+  }
+
+  // Persist the rollback data BEFORE removing anything. If quota is exhausted,
+  // abort here with the existing data untouched. The journal also survives a
+  // tab closing mid-import and is recovered on the next initialization.
+  const journal: ImportJournal = { kind: "netnoveleditor-import", previous, targetKeys: Array.from(entries.keys()) }
+  localStorage.setItem(IMPORT_JOURNAL_KEY, JSON.stringify(journal))
+  try {
+    for (const [key] of previous) localStorage.removeItem(key)
+    for (const [key, value] of entries) localStorage.setItem(key, value)
+    localStorage.removeItem(IMPORT_JOURNAL_KEY)
+  } catch (err) {
+    recoverPendingImport()
+    rebuildFromStorage()
+    throw err
   }
   rebuildFromStorage()
   return { works: works.length, chapters: chapters.length }

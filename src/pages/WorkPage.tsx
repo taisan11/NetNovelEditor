@@ -1,15 +1,15 @@
-import { createSignal, createEffect, For, Show, onCleanup } from "solid-js"
+import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js"
 import {
   getSyosetu,
-  setSyosetu,
+  saveSyosetu,
   listChapters,
-  setChapter,
+  saveChapter,
   deleteChapter,
   nextChapterPage,
 } from "../storage"
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
-import { autoPushOnNavigate, hasPendingPush } from "../sync"
+import { autoSyncOnNavigate, subscribeSync } from "../sync"
 import Trash from "lucide-solid/icons/trash"
 
 export default function WorkPage(props: { title: string }) {
@@ -28,8 +28,10 @@ export default function WorkPage(props: { title: string }) {
     refresh()
   })
 
-  onCleanup(() => {
-    if (hasPendingPush()) void autoPushOnNavigate()
+  onMount(() => {
+    onCleanup(subscribeSync((state) => {
+      if (state.status !== "syncing") refresh()
+    }))
   })
 
   const handleAddChapter = (e: Event) => {
@@ -45,8 +47,8 @@ export default function WorkPage(props: { title: string }) {
       return
     }
     const page = nextChapterPage(props.title)
-    setChapter({ Syosetu_title: props.title, title, page, honbun: "" })
-    setSyosetu({ ...w, pages: page })
+    saveChapter({ Syosetu_title: props.title, title, page, honbun: "" })
+    saveSyosetu({ ...w, pages: page })
     setNewChapterTitle("")
     setError(null)
     refresh()
@@ -60,7 +62,7 @@ export default function WorkPage(props: { title: string }) {
     if (!confirm(`話「${chapter.title}」を削除しますか？`)) return
     deleteChapter(chapter.Syosetu_title, chapter.page)
     refresh()
-    void autoPushOnNavigate()
+    void autoSyncOnNavigate()
   }
 
   const goHome = () => navigate("")

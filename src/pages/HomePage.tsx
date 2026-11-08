@@ -1,8 +1,8 @@
-import { createSignal, For, Show } from "solid-js"
-import { listSyosetu, getSyosetu, setSyosetu, deleteSyosetu } from "../storage"
+import { createSignal, For, Show, onMount, onCleanup } from "solid-js"
+import { listSyosetu, getSyosetu, saveSyosetu, deleteSyosetu } from "../storage"
 import type { Syosetu } from "../storage"
 import { navigate } from "../App"
-import { autoPushOnNavigate } from "../sync"
+import { autoSyncOnNavigate, subscribeSync } from "../sync"
 
 export default function HomePage() {
   const [newTitle, setNewTitle] = createSignal("")
@@ -10,6 +10,12 @@ export default function HomePage() {
   const [works, setWorks] = createSignal<Syosetu[]>(listSyosetu())
 
   const refresh = () => setWorks(listSyosetu())
+
+  onMount(() => {
+    onCleanup(subscribeSync((state) => {
+      if (state.status !== "syncing") refresh()
+    }))
+  })
 
   const handleCreate = (e: Event) => {
     e.preventDefault()
@@ -22,7 +28,7 @@ export default function HomePage() {
       setError("同じタイトルの作品が既に存在します")
       return
     }
-    setSyosetu({ title, pages: 0, plot: "" })
+    saveSyosetu({ title, pages: 0, plot: "" })
     setNewTitle("")
     setError(null)
     refresh()
@@ -40,7 +46,7 @@ export default function HomePage() {
     if (!confirm(`作品「${work.title}」を削除しますか？`)) return
     deleteSyosetu(work.title)
     refresh()
-    void autoPushOnNavigate()
+    void autoSyncOnNavigate()
   }
 
   return (

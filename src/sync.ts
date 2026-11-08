@@ -1,10 +1,9 @@
 import {
   listDirtySyosetu,
   listDirtyChapters,
-  listSyosetu,
   listAllSyosetuIncludingDirty,
   listAllChapters,
-  getChapterById,
+  isCurrentRecord,
   markSyosetuClean,
   markChapterClean,
   setSyosetu,
@@ -74,7 +73,7 @@ let state: SyncState = {
 export function setSyncAccount(accountId: string | null): void {
   if (syncAccountId === accountId) return
   syncAccountId = accountId
-  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null })
+  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null, lastError: null, lastResult: null })
 }
 
 function emit(): void {
@@ -219,84 +218,55 @@ export interface PushDirtyResult {
 }
 
 export async function uploadSync(): Promise<PushDirtyResult> {
+  const accountId = syncAccountId
   const dirtyS = listDirtySyosetu()
   const dirtyC = listDirtyChapters()
   const deletedS = dirtyS.filter((s) => s.deleted)
   const deletedC = dirtyC.filter((c) => c.deleted)
   const liveS = dirtyS.filter((s) => !s.deleted)
   const liveC = dirtyC.filter((c) => !c.deleted)
+  const result: PushDirtyResult = {
+    ok: true,
+    uploadRequestSent: false,
+    deleteRequestsSent: 0,
+    pushedSyosetu: 0,
+    pushedChapters: 0,
+    serverWinsSyosetu: 0,
+    serverWinsChapters: 0,
+  }
   if (dirtyS.length === 0 && dirtyC.length === 0) {
     recomputePending()
-    return {
-      ok: true,
-      uploadRequestSent: false,
-      deleteRequestsSent: 0,
-      pushedSyosetu: 0,
-      pushedChapters: 0,
-      serverWinsSyosetu: 0,
-      serverWinsChapters: 0,
-    }
+    return result
   }
-
-  let deletedSyosetu = 0
-  let deletedChapters = 0
 
   // Deletions use dedicated idempotent endpoints. Keep local tombstones until
   // all requests succeed so offline deletes can be retried safely.
-  for (const s of deletedS) {
-    const deleteResult = await fetchJson<{ ok: boolean }>(
-      `/api/sync/syosetu/${encodeURIComponent(s.id)}`,
-      { method: "DELETE" },
-    )
-    if (!deleteResult.ok) {
-      return {
-        ok: false,
-        uploadRequestSent: false,
-        deleteRequestsSent: deletedSyosetu + deletedChapters,
-        pushedSyosetu: deletedSyosetu,
-        pushedChapters: deletedChapters,
-        serverWinsSyosetu: 0,
-        serverWinsChapters: 0,
-        error: deleteResult.error,
+  for (const [kind, records] of [["syosetu", deletedS], ["chapter", deletedC]] as const) {
+    for (const record of records) {
+      const deleted = await fetchJson<{ ok: boolean }>(
+        `/api/sync/${kind}/${encodeURIComponent(record.id)}`,
+        { method: "DELETE" },
+      )
+      if (!deleted.ok || accountId !== syncAccountId) {
+        return {
+          ...result,
+          ok: false,
+          error: !deleted.ok ? deleted.error : "同期中にアカウントが変更されました",
+        }
       }
+      result.deleteRequestsSent++
+      if (kind === "syosetu") result.pushedSyosetu++
+      else result.pushedChapters++
     }
-    deletedSyosetu++
-  }
-
-  for (const c of deletedC) {
-    const deleteResult = await fetchJson<{ ok: boolean }>(
-      `/api/sync/chapter/${encodeURIComponent(c.id)}`,
-      { method: "DELETE" },
-    )
-    if (!deleteResult.ok) {
-      return {
-        ok: false,
-        uploadRequestSent: false,
-        deleteRequestsSent: deletedSyosetu + deletedChapters,
-        pushedSyosetu: deletedSyosetu,
-        pushedChapters: deletedChapters,
-        serverWinsSyosetu: 0,
-        serverWinsChapters: 0,
-        error: deleteResult.error,
-      }
-    }
-    deletedChapters++
   }
 
   if (liveS.length === 0 && liveC.length === 0) {
     removeAcknowledgedTombstones(deletedS, deletedC)
     recomputePending()
-    return {
-      ok: true,
-      uploadRequestSent: false,
-      deleteRequestsSent: deletedSyosetu + deletedChapters,
-      pushedSyosetu: deletedSyosetu,
-      pushedChapters: deletedChapters,
-      serverWinsSyosetu: 0,
-      serverWinsChapters: 0,
-    }
+    return result
   }
 
+  result.uploadRequestSent = true
   const res = await fetchJson<PushResponse>("/api/sync/push", {
     method: "POST",
     body: JSON.stringify({
@@ -324,60 +294,49 @@ export async function uploadSync(): Promise<PushDirtyResult> {
   })
 
   if (!res.ok) {
+    return { ...result, ok: false, error: res.error }
+  }
+
+  if (accountId !== syncAccountId) {
     return {
+      ...result,
       ok: false,
-      uploadRequestSent: true,
-      deleteRequestsSent: deletedSyosetu + deletedChapters,
-      pushedSyosetu: deletedSyosetu,
-      pushedChapters: deletedChapters,
-      serverWinsSyosetu: 0,
-      serverWinsChapters: 0,
-      error: res.error,
+      pushedSyosetu: 0,
+      pushedChapters: 0,
+      error: "同期中にアカウントが変更されました",
     }
   }
 
-  let pushedSyosetu = deletedSyosetu
-  let pushedChapters = deletedChapters
-  let serverWinsSyosetu = 0
-  let serverWinsChapters = 0
+  const sentSyosetu = new Map(liveS.map((s) => [s.id, s]))
+  const sentChapters = new Map(liveC.map((c) => [c.id, c]))
 
   for (const r of res.data.results.syosetu) {
-    const sent = liveS.find((s) => s.id === r.id)
-    if (!sent || !listAllSyosetuIncludingDirty().includes(sent)) continue
+    const sent = sentSyosetu.get(r.id)
+    if (!sent || !isCurrentRecord(sent)) continue
     if (r.winner === "client") {
       markSyosetuClean(r.id)
-      pushedSyosetu++
+      result.pushedSyosetu++
     } else if (r.winner === "server" && r.server) {
-      setSyosetu({ ...toClientSyosetu(r.server as ServerSyosetu), dirty: false })
-      serverWinsSyosetu++
+      setSyosetu(toClientSyosetu(r.server as ServerSyosetu))
+      result.serverWinsSyosetu++
     }
   }
   for (const r of res.data.results.chapters) {
-    const sent = liveC.find((c) => c.id === r.id)
-    if (!sent || !listAllChapters().includes(sent)) continue
+    const sent = sentChapters.get(r.id)
+    if (!sent || !isCurrentRecord(sent)) continue
     if (r.winner === "client") {
       markChapterClean(r.id)
-      pushedChapters++
+      result.pushedChapters++
     } else if (r.winner === "server" && r.server) {
       const server = r.server as ServerChapter
-      const local = getChapterById(r.id)
-      const fallbackTitle = local?.Syosetu_title ?? ""
-      setChapter({ ...toClientChapter(server, fallbackTitle), dirty: false })
-      serverWinsChapters++
+      setChapter(toClientChapter(server, sent.Syosetu_title))
+      result.serverWinsChapters++
     }
   }
 
   removeAcknowledgedTombstones(deletedS, deletedC)
   recomputePending()
-  return {
-    ok: true,
-    uploadRequestSent: true,
-    deleteRequestsSent: deletedSyosetu + deletedChapters,
-    pushedSyosetu,
-    pushedChapters,
-    serverWinsSyosetu,
-    serverWinsChapters,
-  }
+  return result
 }
 
 export interface PullResult {
@@ -388,12 +347,23 @@ export interface PullResult {
   error?: string
 }
 
+function shouldApplyServerRecord(
+  server: ServerSyosetu | ServerChapter,
+  local: Syosetu | Chapter | undefined,
+): boolean {
+  return !local?.dirty && (local ? server.updatedAt > local.updatedAt : !server.deleted)
+}
+
 export async function downloadSync(): Promise<PullResult> {
+  const accountId = syncAccountId
   // updatedAt originates on client devices, so it cannot safely serve as a
   // server-side change cursor (clock skew and delayed uploads can hide rows).
   const res = await fetchJson<SnapshotResponse>("/api/sync/snapshot")
   if (!res.ok) {
     return { ok: false, pulledSyosetu: 0, pulledChapters: 0, error: res.error }
+  }
+  if (accountId !== syncAccountId) {
+    return { ok: false, pulledSyosetu: 0, pulledChapters: 0, error: "同期中にアカウントが変更されました" }
   }
   if (!Number.isFinite(res.data.serverTime) || res.data.serverTime < 0) {
     return {
@@ -407,54 +377,31 @@ export async function downloadSync(): Promise<PullResult> {
   const localSyosetu = new Map(listAllSyosetuIncludingDirty().map((s) => [s.id, s]))
   const localChapters = new Map(listAllChapters().map((c) => [c.id, c]))
   const titleBySyosetuId = new Map<string, string>()
-  for (const s of listSyosetu()) titleBySyosetuId.set(s.id, s.title)
+  for (const s of localSyosetu.values()) {
+    if (!s.deleted) titleBySyosetuId.set(s.id, s.title)
+  }
 
   let pulledSyosetu = 0
   let pulledChapters = 0
 
   for (const server of res.data.syosetu) {
     const local = localSyosetu.get(server.id)
-    if (server.deleted) {
-      if (local && server.updatedAt > local.updatedAt) {
-        setSyosetu({ ...toClientSyosetu(server), dirty: false })
-        pulledSyosetu++
-      }
-      continue
-    }
-    if (!local) {
-      setSyosetu({ ...toClientSyosetu(server), dirty: false })
-      titleBySyosetuId.set(server.id, server.title)
-      pulledSyosetu++
-      continue
-    }
-    if (server.updatedAt > local.updatedAt) {
-      setSyosetu({ ...toClientSyosetu(server), dirty: false })
-      titleBySyosetuId.set(server.id, server.title)
-      pulledSyosetu++
-    }
+    // A save or backup import may have happened while the request was in flight.
+    // Never replace an unsent local version during the download phase.
+    if (!shouldApplyServerRecord(server, local)) continue
+    setSyosetu(toClientSyosetu(server))
+    if (!server.deleted) titleBySyosetuId.set(server.id, server.title)
+    pulledSyosetu++
   }
 
   for (const server of res.data.chapters) {
     const local = localChapters.get(server.id)
+    if (!shouldApplyServerRecord(server, local)) continue
     const syosetuTitle = titleBySyosetuId.get(server.syosetuId) ?? local?.Syosetu_title ?? ""
     if (!syosetuTitle) continue
 
-    if (server.deleted) {
-      if (local && server.updatedAt > local.updatedAt) {
-        setChapter({ ...toClientChapter(server, syosetuTitle), dirty: false })
-        pulledChapters++
-      }
-      continue
-    }
-    if (!local) {
-      setChapter({ ...toClientChapter(server, syosetuTitle), dirty: false })
-      pulledChapters++
-      continue
-    }
-    if (server.updatedAt > local.updatedAt) {
-      setChapter({ ...toClientChapter(server, syosetuTitle), dirty: false })
-      pulledChapters++
-    }
+    setChapter(toClientChapter(server, syosetuTitle))
+    pulledChapters++
   }
 
   saveLastSyncAt(res.data.serverTime)
@@ -465,7 +412,11 @@ export async function downloadSync(): Promise<PullResult> {
 
 export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
   if (syncInFlight) return syncInFlight
-  const run = runFullSync()
+  const run = runFullSync().catch((err: unknown) => {
+    const error = err instanceof Error ? err.message : String(err)
+    setState({ status: "error", lastError: error })
+    return { ok: false as const, error }
+  })
   syncInFlight = run
   try {
     return await run
@@ -477,9 +428,6 @@ export async function syncNow(): Promise<{ ok: boolean; result?: SyncResult; err
 let syncInFlight: Promise<{ ok: boolean; result?: SyncResult; error?: string }> | null = null
 
 async function runFullSync(): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
-  // If a route change started an automatic upload, wait for it and then still
-  // perform the download phase requested by the manual sync.
-  if (autoPushInFlight) await autoPushInFlight
   setState({ status: "syncing", lastError: null })
   const startedAt = Date.now()
 
@@ -520,29 +468,51 @@ async function runFullSync(): Promise<{ ok: boolean; result?: SyncResult; error?
   return { ok: true, result }
 }
 
-let autoPushInFlight: Promise<void> | null = null
+function isOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false
+}
 
-export async function autoPushOnNavigate(): Promise<void> {
-  if (autoPushInFlight) return autoPushInFlight
-  if (state.status === "syncing") return
-  if (pendingPushCount() === 0) {
-    recomputePending()
-    return
-  }
+export async function autoSyncOnNavigate(): Promise<void> {
+  if (syncAccountId === null || isOffline()) return
+  await syncNow()
+}
+
+let autoSyncInFlight: Promise<void> | null = null
+
+export async function autoSyncNow(): Promise<void> {
+  if (autoSyncInFlight) return autoSyncInFlight
+  if (isOffline() || (typeof document !== "undefined" && document.visibilityState === "hidden")) return
+  const accountId = syncAccountId
   const run = (async () => {
-    setState({ status: "syncing" })
-    const push = await uploadSync()
-    if (!push.ok) {
-      setState({ status: "error", lastError: push.error ?? "uploadに失敗しました" })
-    } else {
-      setState({ status: "idle", lastError: null })
-    }
+    const res = await fetchJson<{ user: { id: string } | null }>("/api/auth/me")
+    if (!res.ok) return
+    const nextAccountId = res.data.user?.id ?? null
+    if (accountId !== syncAccountId && nextAccountId !== syncAccountId) return
+    setSyncAccount(nextAccountId)
+    await autoSyncOnNavigate()
   })()
-  autoPushInFlight = run
+  autoSyncInFlight = run
   try {
     await run
   } finally {
-    if (autoPushInFlight === run) autoPushInFlight = null
+    if (autoSyncInFlight === run) autoSyncInFlight = null
+  }
+}
+
+// Full synchronization shares one in-flight promise with manual sync and route
+// changes. Hidden/offline tabs do not poll, and every listener is removable.
+export function startAutoSync(): () => void {
+  const run = () => { void autoSyncNow() }
+  window.addEventListener("focus", run)
+  window.addEventListener("online", run)
+  document.addEventListener("visibilitychange", run)
+  const timer = window.setInterval(run, 60_000)
+  run()
+  return () => {
+    window.clearInterval(timer)
+    window.removeEventListener("focus", run)
+    window.removeEventListener("online", run)
+    document.removeEventListener("visibilitychange", run)
   }
 }
 

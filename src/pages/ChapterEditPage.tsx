@@ -2,13 +2,13 @@ import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js"
 import {
   getSyosetu,
   getChapter,
-  setChapter,
-  setSyosetu,
+  saveChapter,
+  saveSyosetu,
   deleteChapter,
 } from "../storage"
 import type { Syosetu, Chapter } from "../storage"
 import { navigate } from "../App"
-import { autoPushOnNavigate, hasPendingPush } from "../sync"
+import { subscribeSync } from "../sync"
 import { getSettings } from "../settings"
 import Trash from "lucide-solid/icons/trash"
 import RotateCcw from "lucide-solid/icons/rotate-ccw"
@@ -33,10 +33,18 @@ function renderHonbun(text: string): string {
   )
 }
 
-function createHistory() {
+function createHistory(readValue: () => string) {
   const [history, setHistory] = createSignal<HistoryState>({ stack: [], index: -1 })
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const cancel = () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  onCleanup(cancel)
 
   const init = (value: string) => {
+    cancel()
     setHistory({ stack: [value], index: 0 })
   }
 
@@ -48,27 +56,26 @@ function createHistory() {
     setHistory({ stack: newStack, index: newStack.length - 1 })
   }
 
-  const undo = (): string | null => {
+  const move = (offset: number): string | null => {
     const h = history()
-    if (h.index <= 0) return null
-    const newIndex = h.index - 1
-    setHistory({ ...h, index: newIndex })
-    return h.stack[newIndex]
-  }
-
-  const redo = (): string | null => {
-    const h = history()
-    if (h.index >= h.stack.length - 1) return null
-    const newIndex = h.index + 1
+    const newIndex = h.index + offset
+    if (newIndex < 0 || newIndex >= h.stack.length) return null
     setHistory({ ...h, index: newIndex })
     return h.stack[newIndex]
   }
 
   return {
     init,
-    push,
-    undo,
-    redo,
+    cancel,
+    schedule: () => {
+      cancel()
+      timer = setTimeout(() => {
+        push(readValue())
+        timer = null
+      }, HISTORY_DEBOUNCE_MS)
+    },
+    undo: () => move(-1),
+    redo: () => move(1),
     canUndo: () => history().index > 0,
     canRedo: () => history().index < history().stack.length - 1,
   }
@@ -85,44 +92,11 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
   const [honbunDirty, setHonbunDirty] = createSignal(false)
   const [plotDirty, setPlotDirty] = createSignal(false)
 
-  const honbunHistory = createHistory()
-  const plotHistory = createHistory()
-
-  let honbunTimer: ReturnType<typeof setTimeout> | null = null
-  let plotTimer: ReturnType<typeof setTimeout> | null = null
+  const honbunHistory = createHistory(honbun)
+  const plotHistory = createHistory(plot)
 
   let honbunTextareaRef: HTMLTextAreaElement | undefined
   let plotTextareaRef: HTMLTextAreaElement | undefined
-
-  const clearHonbunTimer = () => {
-    if (honbunTimer) {
-      clearTimeout(honbunTimer)
-      honbunTimer = null
-    }
-  }
-
-  const clearPlotTimer = () => {
-    if (plotTimer) {
-      clearTimeout(plotTimer)
-      plotTimer = null
-    }
-  }
-
-  const scheduleHonbunHistory = () => {
-    clearHonbunTimer()
-    honbunTimer = setTimeout(() => {
-      honbunHistory.push(honbun())
-      honbunTimer = null
-    }, HISTORY_DEBOUNCE_MS)
-  }
-
-  const schedulePlotHistory = () => {
-    clearPlotTimer()
-    plotTimer = setTimeout(() => {
-      plotHistory.push(plot())
-      plotTimer = null
-    }, HISTORY_DEBOUNCE_MS)
-  }
 
   const restoreCaret = (
     textarea: HTMLTextAreaElement | undefined,
@@ -136,14 +110,14 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
   }
 
   const applyHonbun = (value: string) => {
-    clearHonbunTimer()
+    honbunHistory.cancel()
     setHonbun(value)
     setHonbunDirty(true)
     restoreCaret(honbunTextareaRef, value.length)
   }
 
   const applyPlot = (value: string) => {
-    clearPlotTimer()
+    plotHistory.cancel()
     setPlot(value)
     setPlotDirty(true)
     restoreCaret(plotTextareaRef, value.length)
@@ -185,27 +159,24 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
     setTab("honbun")
     honbunHistory.init(honbunValue)
     plotHistory.init(plotValue)
-    clearHonbunTimer()
-    clearPlotTimer()
   })
 
   const persistHonbun = () => {
-    const c = chapter()
-    if (!c) return
+    const c = getChapter(props.syosetuTitle, props.page) ?? chapter()
+    if (!c || !honbunDirty()) return
     const nextHonbun = honbun()
-    setChapter({
+    const saved = saveChapter({
       ...c,
       honbun: nextHonbun,
-      honbunClearRequested: nextHonbun === "" && c.honbun !== "",
     })
+    setChapterData(saved)
     setHonbunDirty(false)
   }
 
   const persistPlot = () => {
-    const w = work()
-    if (!w) return
-    setSyosetu({ ...w, plot: plot() })
-    setWork({ ...w, plot: plot() })
+    const w = getSyosetu(props.syosetuTitle) ?? work()
+    if (!w || !plotDirty()) return
+    setWork(saveSyosetu({ ...w, plot: plot() }))
     setPlotDirty(false)
   }
 
@@ -227,7 +198,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
     const next = value.slice(0, start) + inserted + value.slice(end)
     setHonbun(next)
     setHonbunDirty(true)
-    scheduleHonbunHistory()
+    honbunHistory.schedule()
     textarea.focus()
     textarea.setSelectionRange(cursorOffset, cursorOffset)
   }
@@ -267,17 +238,31 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
 
   onMount(() => {
     document.addEventListener("keydown", handleKeydown)
+    onCleanup(subscribeSync((state) => {
+      if (state.status === "syncing") return
+      const w = getSyosetu(props.syosetuTitle)
+      const c = getChapter(props.syosetuTitle, props.page)
+      // Background downloads must not reset a draft, its caret or undo history.
+      if ((!w || !c) && (honbunDirty() || plotDirty())) return
+      setWork(w)
+      setChapterData(c)
+      if (c && !honbunDirty() && honbun() !== c.honbun) {
+        setHonbun(c.honbun)
+        honbunHistory.init(c.honbun)
+      }
+      if (w && !plotDirty() && plot() !== w.plot) {
+        setPlot(w.plot)
+        plotHistory.init(w.plot)
+      }
+    }))
   })
 
   onCleanup(() => {
     document.removeEventListener("keydown", handleKeydown)
-    clearHonbunTimer()
-    clearPlotTimer()
     // Route changes can unmount the editor before a textarea blur is
-    // delivered. Persist the current signals before starting auto-push.
+    // delivered. Persist the current signals before route synchronization.
     if (honbunDirty()) persistHonbun()
     if (plotDirty()) persistPlot()
-    if (hasPendingPush()) void autoPushOnNavigate()
   })
 
   return (
@@ -354,61 +339,39 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
             プロット
           </button>
         </div>
-        <Show when={tab() === "honbun"}>
+        <Show when={tab() !== "preview"}>
           <div class="editor-toolbar">
             <button
               type="button"
-              onClick={undoHonbun}
-              disabled={!honbunHistory.canUndo()}
+              onClick={() => tab() === "honbun" ? undoHonbun() : undoPlot()}
+              disabled={!(tab() === "honbun" ? honbunHistory : plotHistory).canUndo()}
               title="元に戻す (Ctrl+Z)"
-              aria-label="本文を元に戻す"
+              aria-label={`${tab() === "honbun" ? "本文" : "プロット"}を元に戻す`}
             >
               <RotateCcw size={16} />
               元に戻す
             </button>
             <button
               type="button"
-              onClick={redoHonbun}
-              disabled={!honbunHistory.canRedo()}
+              onClick={() => tab() === "honbun" ? redoHonbun() : redoPlot()}
+              disabled={!(tab() === "honbun" ? honbunHistory : plotHistory).canRedo()}
               title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
-              aria-label="本文のやり直し"
+              aria-label={`${tab() === "honbun" ? "本文" : "プロット"}のやり直し`}
             >
               <RotateCw size={16} />
               やり直し
             </button>
-            <button
-              type="button"
-              class="ruby-btn"
-              onClick={() => insertRuby(honbunTextareaRef)}
-              title="選択中の文字を |《》 で囲みます"
-            >
-              <TextCursorInput size={16} />
-              ルビ入力
-            </button>
-          </div>
-        </Show>
-        <Show when={tab() === "plot"}>
-          <div class="editor-toolbar">
-            <button
-              type="button"
-              onClick={undoPlot}
-              disabled={!plotHistory.canUndo()}
-              title="元に戻す (Ctrl+Z)"
-              aria-label="プロットを元に戻す"
-            >
-              <RotateCcw size={16} />
-              元に戻す
-            </button>
-            <button
-              type="button"
-              onClick={redoPlot}
-              disabled={!plotHistory.canRedo()}
-              title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
-              aria-label="プロットのやり直し"
-            >
-              <RotateCw size={16} />
-              やり直し
-            </button>
+            <Show when={tab() === "honbun"}>
+              <button
+                type="button"
+                class="ruby-btn"
+                onClick={() => insertRuby(honbunTextareaRef)}
+                title="選択中の文字を |《》 で囲みます"
+              >
+                <TextCursorInput size={16} />
+                ルビ入力
+              </button>
+            </Show>
           </div>
         </Show>
       </div>
@@ -421,7 +384,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
           onInput={(e) => {
             setHonbun(e.currentTarget.value)
             setHonbunDirty(true)
-            scheduleHonbunHistory()
+            honbunHistory.schedule()
           }}
           onBlur={persistHonbun}
           rows={20}
@@ -448,7 +411,7 @@ export default function ChapterEditPage(props: { syosetuTitle: string; page: num
           onInput={(e) => {
             setPlot(e.currentTarget.value)
             setPlotDirty(true)
-            schedulePlotHistory()
+            plotHistory.schedule()
           }}
           onBlur={persistPlot}
           rows={20}

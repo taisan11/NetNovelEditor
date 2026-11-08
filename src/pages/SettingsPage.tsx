@@ -7,7 +7,6 @@ import {
   getSyncState,
   subscribeSync,
   syncNow,
-  autoPushOnNavigate,
   setSyncAccount,
   type SyncState,
 } from "../sync"
@@ -154,7 +153,7 @@ export default function SettingsPage() {
     if (pulled > 0) parts.push(`受信${pulled}件`)
     if (serverWins > 0) parts.push(`競合${serverWins}件はサーバー側を採用`)
     setSyncMessage({
-      kind: serverWins > 0 ? "success" : "success",
+      kind: "success",
       text: parts.length > 0 ? `同期完了: ${parts.join(" / ")}` : "同期完了: 変更はありません",
     })
   }
@@ -162,7 +161,6 @@ export default function SettingsPage() {
   onMount(() => {
     void refreshCloudUser()
     unsubscribeSync = subscribeSync((s) => setSyncState(s))
-    void autoPushOnNavigate()
   })
 
   onCleanup(() => {
@@ -370,7 +368,8 @@ export default function SettingsPage() {
 
       <h2>手動同期</h2>
       <p class="muted">
-        手動で同期します。競合があった際はより新しい編集が優先されます。
+        起動時・画面移動時・画面復帰時・通信復旧時と、表示中は1分ごとに自動同期します。
+        ここから手動でも同期できます。競合があった際はより新しい編集が優先されます。
       </p>
       <div class="sync-panel">
         <p>
@@ -410,6 +409,7 @@ export default function SettingsPage() {
       <h2>バックアップ&インポート</h2>
       <p class="muted">
         作品データを単一のJSONファイルにバックアップ・復元します。インポートを行うと現在のすべての作品が上書きされるのでご注意ください。
+        復元した作品は新しい変更としてクラウドにも送信されます。クラウドだけにある作品は同期時に追加されます。
       </p>
       <div class="backup-actions">
         <button type="button" onClick={handleBackup}>
@@ -417,7 +417,7 @@ export default function SettingsPage() {
         </button>
         <label class="file-input-label">
           ファイルからインポート
-          <input type="file" accept="application/json,.json" onChange={handleImport} />
+          <input type="file" accept="application/json,.json" onChange={handleImport} disabled={syncState().status === "syncing"} />
         </label>
       </div>
       <Show when={message()}>
