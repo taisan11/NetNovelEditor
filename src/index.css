@@ -83,12 +83,16 @@
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
+  font-family:
+    system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo,
+    sans-serif;
   margin: 0;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
-  transition: background-color 0.15s, color 0.15s;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
 
 .container {
@@ -125,11 +129,15 @@ body {
 }
 
 @keyframes sync-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sync-spinner { animation: none; }
+  .sync-spinner {
+    animation: none;
+  }
 }
 
 h1 {
@@ -329,7 +337,12 @@ input[type="range"] {
   resize: vertical;
   min-height: 360px;
   font-family: inherit;
-  transition: font-size 0.1s, line-height 0.1s, background-color 0.15s, color 0.15s, border-color 0.15s;
+  transition:
+    font-size 0.1s,
+    line-height 0.1s,
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .editor.vertical {
@@ -418,7 +431,12 @@ button.small {
   word-wrap: break-word;
   font-size: var(--editor-font-size);
   line-height: var(--editor-line-height);
-  transition: font-size 0.1s, line-height 0.1s, background-color 0.15s, color 0.15s, border-color 0.15s;
+  transition:
+    font-size 0.1s,
+    line-height 0.1s,
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .preview:empty::before {
@@ -483,7 +501,9 @@ button.small {
   border-radius: 6px;
   text-align: center;
   font-weight: 500;
-  transition: border-color 0.15s, transform 0.1s;
+  transition:
+    border-color 0.15s,
+    transform 0.1s;
 }
 
 .theme-option:hover .theme-preview {

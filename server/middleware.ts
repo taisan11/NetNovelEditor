@@ -1,39 +1,39 @@
-import { createMiddleware } from "hono/factory"
-import { getCookie, setCookie, deleteCookie } from "hono/cookie"
-import { verifySessionToken, AUTH_COOKIE } from "./auth"
+import { createMiddleware } from "hono/factory";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import { verifySessionToken, AUTH_COOKIE } from "./auth";
 
 export interface SessionUser {
-  id: string
-  email: string
+  id: string;
+  email: string;
 }
 
 export type SessionContext = {
-  user: SessionUser | null
-  setSessionCookie: (token: string) => void
-  clearSessionCookie: () => void
-}
+  user: SessionUser | null;
+  setSessionCookie: (token: string) => void;
+  clearSessionCookie: () => void;
+};
 
 export interface RateLimitBinding {
-  limit(options: { key: string }): Promise<{ success: boolean }>
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 export const session = createMiddleware<{
-  Bindings: { JWT_SECRET?: string }
-  Variables: SessionContext
+  Bindings: { JWT_SECRET?: string };
+  Variables: SessionContext;
 }>(async (c, next) => {
-  let resolvedUser: SessionUser | null = null
-  const secret = c.env.JWT_SECRET
-  const token = getCookie(c, AUTH_COOKIE)
+  let resolvedUser: SessionUser | null = null;
+  const secret = c.env.JWT_SECRET;
+  const token = getCookie(c, AUTH_COOKIE);
   if (secret && token) {
     try {
-      const payload = await verifySessionToken(token, secret)
-      resolvedUser = { id: payload.sub, email: payload.email }
+      const payload = await verifySessionToken(token, secret);
+      resolvedUser = { id: payload.sub, email: payload.email };
     } catch {
-      resolvedUser = null
+      resolvedUser = null;
     }
   }
 
-  c.set("user", resolvedUser)
+  c.set("user", resolvedUser);
   c.set("setSessionCookie", (jwt: string) => {
     setCookie(c, AUTH_COOKIE, jwt, {
       httpOnly: true,
@@ -41,49 +41,49 @@ export const session = createMiddleware<{
       sameSite: "Lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 7,
-    })
-  })
+    });
+  });
   c.set("clearSessionCookie", () => {
-    deleteCookie(c, AUTH_COOKIE, { path: "/" })
-  })
+    deleteCookie(c, AUTH_COOKIE, { path: "/" });
+  });
 
-  await next()
-})
+  await next();
+});
 
 export const requireAuth = createMiddleware<{
-  Variables: SessionContext
+  Variables: SessionContext;
 }>(async (c, next) => {
-  const u = c.get("user")
-  if (!u) return c.json({ error: "unauthorized" }, 401)
-  await next()
-})
+  const u = c.get("user");
+  if (!u) return c.json({ error: "unauthorized" }, 401);
+  await next();
+});
 
 async function sha256Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input))
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
+    .join("");
 }
 
 export const rateLimit = createMiddleware<{
-  Bindings: { RATE_LIMITER: RateLimitBinding }
+  Bindings: { RATE_LIMITER: RateLimitBinding };
 }>(async (c, next) => {
-  const cookie = getCookie(c, AUTH_COOKIE)
-  const rawKey = cookie && cookie.length > 0 ? cookie : "guest"
-  let key: string
+  const cookie = getCookie(c, AUTH_COOKIE);
+  const rawKey = cookie && cookie.length > 0 ? cookie : "guest";
+  let key: string;
   try {
-    key = await sha256Hex(rawKey)
+    key = await sha256Hex(rawKey);
   } catch {
-    key = "guest"
+    key = "guest";
   }
   try {
-    const { success } = await c.env.RATE_LIMITER.limit({ key })
+    const { success } = await c.env.RATE_LIMITER.limit({ key });
     if (!success) {
-      return c.json({ error: "rate limit exceeded" }, 429)
+      return c.json({ error: "rate limit exceeded" }, 429);
     }
   } catch {
-    await next()
-    return
+    await next();
+    return;
   }
-  await next()
-})
+  await next();
+});

@@ -1,11 +1,11 @@
 /* @refresh reload */
-import { render } from 'solid-js/web'
-import './index.css'
-import { initStorage } from './storage'
-import App from './App.tsx'
+import { render } from "solid-js/web";
+import "./index.css";
+import { initStorage } from "./storage";
+import App from "./App.tsx";
 
-initStorage()
+initStorage();
 
-const root = document.getElementById('root')
+const root = document.getElementById("root");
 
-render(() => <App />, root!)
+render(() => <App />, root!);

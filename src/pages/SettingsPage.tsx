@@ -1,227 +1,220 @@
-import { createSignal, createEffect, onMount, Show, onCleanup } from "solid-js"
-import { exportBackup, importBackup } from "../storage"
-import { getSettings, setSettings, applySettings } from "../settings"
-import type { Theme } from "../settings"
-import { navigate } from "../App"
-import {
-  getSyncState,
-  subscribeSync,
-  syncNow,
-  setSyncAccount,
-  type SyncState,
-} from "../sync"
+import { createSignal, createEffect, onMount, Show, onCleanup } from "solid-js";
+import { exportBackup, importBackup } from "../storage";
+import { getSettings, setSettings, applySettings } from "../settings";
+import type { Theme } from "../settings";
+import { navigate } from "../App";
+import { getSyncState, subscribeSync, syncNow, setSyncAccount, type SyncState } from "../sync";
 
-type Message = { kind: "success" | "error"; text: string }
-type CloudUser = { id: string; email: string }
+type Message = { kind: "success" | "error"; text: string };
+type CloudUser = { id: string; email: string };
 
 function syncStateLabel(state: SyncState): string {
-  if (state.status === "syncing") return "同期中…"
-  if (state.status === "error") return "エラー"
-  if (state.pendingPush > 0) return "未送信の変更あり"
-  return "アイドル"
+  if (state.status === "syncing") return "同期中…";
+  if (state.status === "error") return "エラー";
+  if (state.pendingPush > 0) return "未送信の変更あり";
+  return "アイドル";
 }
 
 function formatDateTime(ts: number): string {
-  const d = new Date(ts)
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, "0")
-  const dd = String(d.getDate()).padStart(2, "0")
-  const hh = String(d.getHours()).padStart(2, "0")
-  const mi = String(d.getMinutes()).padStart(2, "0")
-  const ss = String(d.getSeconds()).padStart(2, "0")
-  return `${yyyy}/${mm}/${dd} ${hh}:${mi}:${ss}`
+  const d = new Date(ts);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}/${mm}/${dd} ${hh}:${mi}:${ss}`;
 }
 
 export default function SettingsPage() {
-  const initial = getSettings()
-  const [fontSize, setFontSize] = createSignal(initial.fontSize)
-  const [lineHeight, setLineHeight] = createSignal(initial.lineHeight)
-  const [theme, setTheme] = createSignal<Theme>(initial.theme)
-  const [verticalWriting, setVerticalWriting] = createSignal(initial.verticalWriting)
-  const [message, setMessage] = createSignal<Message | null>(null)
+  const initial = getSettings();
+  const [fontSize, setFontSize] = createSignal(initial.fontSize);
+  const [lineHeight, setLineHeight] = createSignal(initial.lineHeight);
+  const [theme, setTheme] = createSignal<Theme>(initial.theme);
+  const [verticalWriting, setVerticalWriting] = createSignal(initial.verticalWriting);
+  const [message, setMessage] = createSignal<Message | null>(null);
 
-  let settingsReady = false
+  let settingsReady = false;
   createEffect(() => {
-    const s = { fontSize: fontSize(), lineHeight: lineHeight(), theme: theme(), verticalWriting: verticalWriting() }
+    const s = {
+      fontSize: fontSize(),
+      lineHeight: lineHeight(),
+      theme: theme(),
+      verticalWriting: verticalWriting(),
+    };
     if (!settingsReady) {
-      settingsReady = true
-      return
+      settingsReady = true;
+      return;
     }
-    setSettings(s)
-    applySettings(s)
-  })
+    setSettings(s);
+    applySettings(s);
+  });
 
   const handleBackup = () => {
     try {
-      const json = exportBackup()
-      const blob = new Blob([json], { type: "application/json" })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
-      a.href = url
-      a.download = `netnoveleditor-backup-${stamp}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      setMessage({ kind: "success", text: "バックアップをダウンロードしました" })
+      const json = exportBackup();
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      a.href = url;
+      a.download = `netnoveleditor-backup-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMessage({ kind: "success", text: "バックアップをダウンロードしました" });
     } catch (err) {
       setMessage({
         kind: "error",
         text: `バックアップに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
-      })
+      });
     }
-  }
+  };
 
   const handleImport = (e: Event & { currentTarget: HTMLInputElement }) => {
-    const file = e.currentTarget.files?.[0]
-    e.currentTarget.value = ""
-    if (!file) return
-    if (!confirm("現在のすべての作品が上書きされます。続行しますか？")) return
-    const reader = new FileReader()
+    const file = e.currentTarget.files?.[0];
+    e.currentTarget.value = "";
+    if (!file) return;
+    if (!confirm("現在のすべての作品が上書きされます。続行しますか？")) return;
+    const reader = new FileReader();
     reader.onload = () => {
       try {
-        const json = String(reader.result ?? "")
-        const result = importBackup(json)
+        const json = String(reader.result ?? "");
+        const result = importBackup(json);
         setMessage({
           kind: "success",
           text: `${result.works}作品・${result.chapters}話をインポートしました。まもなく作品一覧へ移動します…`,
-        })
-        setTimeout(() => navigate(""), 1500)
+        });
+        setTimeout(() => navigate(""), 1500);
       } catch (err) {
         setMessage({
           kind: "error",
           text: `インポートに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
-        })
+        });
       }
-    }
+    };
     reader.onerror = () => {
-      setMessage({ kind: "error", text: "ファイルの読み込みに失敗しました" })
-    }
-    reader.readAsText(file)
-  }
+      setMessage({ kind: "error", text: "ファイルの読み込みに失敗しました" });
+    };
+    reader.readAsText(file);
+  };
 
-  const goHome = () => navigate("")
+  const goHome = () => navigate("");
 
   const selectTheme = (next: Theme) => {
-    setTheme(next)
-  }
+    setTheme(next);
+  };
 
-  const [cloudId, setCloudId] = createSignal("")
-  const [cloudPassword, setCloudPassword] = createSignal("")
-  const [cloudError, setCloudError] = createSignal<string | null>(null)
-  const [cloudBusy, setCloudBusy] = createSignal(false)
-  const [cloudUser, setCloudUser] = createSignal<CloudUser | null>(null)
+  const [cloudError, setCloudError] = createSignal<string | null>(null);
+  const [cloudNotice, setCloudNotice] = createSignal<string | null>(null);
+  const [cloudBusy, setCloudBusy] = createSignal(false);
+  const [cloudLoading, setCloudLoading] = createSignal(true);
+  const [cloudUser, setCloudUser] = createSignal<CloudUser | null>(null);
 
   const refreshCloudUser = async () => {
     try {
-      const res = await fetch("/api/auth/me", { credentials: "include" })
-      const data = (await res.json().catch(() => ({}))) as { user?: CloudUser | null }
-      const user = data.user ?? null
-      setCloudUser(user)
-      setSyncAccount(user?.id ?? null)
+      const res = await fetch("/api/auth/me", { credentials: "include" });
+      if (!res.ok) throw new Error("ログイン状態を確認できませんでした");
+      const data = (await res.json().catch(() => ({}))) as { user?: CloudUser | null };
+      const user = data.user ?? null;
+      setCloudUser(user);
+      setSyncAccount(user?.id ?? null);
     } catch {
-      setCloudUser(null)
-      setSyncAccount(null)
+      setCloudUser(null);
+      setSyncAccount(null);
+      setCloudError("ログイン状態を確認できませんでした。ページを再読み込みしてください。");
+    } finally {
+      setCloudLoading(false);
     }
-  }
+  };
 
-  const [syncState, setSyncState] = createSignal<SyncState>(getSyncState())
-  const [syncMessage, setSyncMessage] = createSignal<Message | null>(null)
-  let unsubscribeSync: (() => void) | undefined
+  const [syncState, setSyncState] = createSignal<SyncState>(getSyncState());
+  const [syncMessage, setSyncMessage] = createSignal<Message | null>(null);
+  let unsubscribeSync: (() => void) | undefined;
 
   const handleSync = async () => {
-    setSyncMessage(null)
-    const result = await syncNow()
+    setSyncMessage(null);
+    const result = await syncNow();
     if (!result.ok) {
-      setSyncMessage({ kind: "error", text: `同期に失敗しました: ${result.error}` })
-      return
+      setSyncMessage({ kind: "error", text: `同期に失敗しました: ${result.error}` });
+      return;
     }
-    const r = result.result
+    const r = result.result;
     if (!r) {
-      setSyncMessage({ kind: "success", text: "変更はありません" })
-      return
+      setSyncMessage({ kind: "success", text: "変更はありません" });
+      return;
     }
-    const pushed = r.pushedSyosetu + r.pushedChapters
-    const pulled = r.pulledSyosetu + r.pulledChapters
-    const serverWins = r.serverWinsSyosetu + r.serverWinsChapters
-    const parts: string[] = []
-    parts.push(r.uploadRequestSent ? "upload実行" : "upload対象なし")
-    if (r.deleteRequestsSent > 0) parts.push(`削除送信${r.deleteRequestsSent}件`)
-    if (r.downloadRequestSent) parts.push("download実行")
-    if (pushed > 0) parts.push(`送信${pushed}件`)
-    if (pulled > 0) parts.push(`受信${pulled}件`)
-    if (serverWins > 0) parts.push(`競合${serverWins}件はサーバー側を採用`)
+    const pushed = r.pushedSyosetu + r.pushedChapters;
+    const pulled = r.pulledSyosetu + r.pulledChapters;
+    const serverWins = r.serverWinsSyosetu + r.serverWinsChapters;
+    const parts: string[] = [];
+    parts.push(r.uploadRequestSent ? "upload実行" : "upload対象なし");
+    if (r.deleteRequestsSent > 0) parts.push(`削除送信${r.deleteRequestsSent}件`);
+    if (r.downloadRequestSent) parts.push("download実行");
+    if (pushed > 0) parts.push(`送信${pushed}件`);
+    if (pulled > 0) parts.push(`受信${pulled}件`);
+    if (serverWins > 0) parts.push(`競合${serverWins}件はサーバー側を採用`);
     setSyncMessage({
       kind: "success",
       text: parts.length > 0 ? `同期完了: ${parts.join(" / ")}` : "同期完了: 変更はありません",
-    })
-  }
+    });
+  };
 
   onMount(() => {
-    void refreshCloudUser()
-    unsubscribeSync = subscribeSync((s) => setSyncState(s))
-  })
+    const url = new URL(window.location.href);
+    const error = url.searchParams.get("auth_error");
+    const errors: Record<string, string> = {
+      configuration: "Googleログインのサーバー設定が未完了です。管理者にお問い合わせください。",
+      invalid_state:
+        "認証の有効期限が切れたか、不正なリクエストです。もう一度ログインしてください。",
+      cancelled: "Googleログインをキャンセルしました。",
+      unverified_email: "メールアドレスが確認済みのGoogleアカウントを使用してください。",
+      failed: "Googleログインに失敗しました。もう一度お試しください。",
+    };
+    if (error) setCloudError(errors[error] ?? errors.failed);
+    if (url.searchParams.get("auth_success") === "1") {
+      setCloudNotice("Googleアカウントでログインしました。初めての方は会員登録も完了しています。");
+    }
+    if (url.searchParams.has("auth_error") || url.searchParams.has("auth_success")) {
+      url.searchParams.delete("auth_error");
+      url.searchParams.delete("auth_success");
+      window.history.replaceState(null, "", url);
+    }
+    void refreshCloudUser();
+    unsubscribeSync = subscribeSync((s) => setSyncState(s));
+  });
 
   onCleanup(() => {
-    unsubscribeSync?.()
-  })
+    unsubscribeSync?.();
+  });
 
-  const handleCloudLogin = async (e: SubmitEvent) => {
-    e.preventDefault()
-    const id = cloudId().trim()
-    const password = cloudPassword()
-    if (!id || !password) {
-      setCloudError("IDとパスワードを入力してください")
-      return
-    }
-    setCloudError(null)
-    setCloudBusy(true)
-    try {
-      const res = await fetch("/api/auth/signin", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, password }),
-      })
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string }
-        setCloudError(data.error ?? "ログインに失敗しました")
-        return
-      }
-      const data = (await res.json()) as { user: CloudUser }
-      setCloudUser(data.user)
-      setSyncAccount(data.user.id)
-      setCloudId("")
-      setCloudPassword("")
-      void syncNow()
-    } catch (err) {
-      setCloudError(
-        `ログインに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
-      )
-    } finally {
-      setCloudBusy(false)
-    }
-  }
+  const handleCloudLogin = () => {
+    setCloudError(null);
+    setCloudBusy(true);
+    window.location.assign("/api/auth/google");
+  };
 
   const handleCloudLogout = async () => {
-    setCloudBusy(true)
-    setCloudError(null)
+    setCloudBusy(true);
+    setCloudError(null);
     try {
-      await fetch("/api/auth/signout", {
+      const res = await fetch("/api/auth/signout", {
         method: "POST",
         credentials: "include",
-      })
-      setCloudUser(null)
-      setSyncAccount(null)
+      });
+      if (!res.ok) throw new Error("サーバーでログアウトできませんでした");
+      setCloudUser(null);
+      setSyncAccount(null);
+      setCloudNotice(null);
     } catch (err) {
       setCloudError(
         `ログアウトに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
-      )
+      );
     } finally {
-      setCloudBusy(false)
+      setCloudBusy(false);
     }
-  }
+  };
 
   return (
     <section>
@@ -229,8 +222,8 @@ export default function SettingsPage() {
         <a
           href="#"
           onClick={(e) => {
-            e.preventDefault()
-            goHome()
+            e.preventDefault();
+            goHome();
           }}
         >
           ← 作品一覧
@@ -314,43 +307,30 @@ export default function SettingsPage() {
 
       <h2>クラウド同期</h2>
       <p class="muted">
-        現在クラウド同期はベータ版のため招待制です。招待されたアカウントでログインすると、作品をクラウドにバックアップして複数端末で同期できます。
+        Googleアカウントで登録・ログインすると、作品をクラウドにバックアップして複数端末で同期できます。
+        初回ログイン時に会員登録が完了します。パスワードの設定は不要です。
       </p>
       <Show
         when={cloudUser()}
         fallback={
-          <form class="cloud-login-form" onSubmit={handleCloudLogin}>
-            <div class="setting-row">
-              <label for="cloud-id-input">ID</label>
-              <input
-                id="cloud-id-input"
-                type="text"
-                autocomplete="username"
-                value={cloudId()}
-                disabled={cloudBusy()}
-                onInput={(e) => setCloudId(e.currentTarget.value)}
-              />
-            </div>
-            <div class="setting-row">
-              <label for="cloud-password-input">パスワード</label>
-              <input
-                id="cloud-password-input"
-                type="password"
-                autocomplete="current-password"
-                value={cloudPassword()}
-                disabled={cloudBusy()}
-                onInput={(e) => setCloudPassword(e.currentTarget.value)}
-              />
-            </div>
+          <div class="cloud-login-form">
             <div class="cloud-login-actions">
-              <button type="submit" disabled={cloudBusy()}>
-                {cloudBusy() ? "ログイン中…" : "ログイン"}
+              <button
+                type="button"
+                onClick={handleCloudLogin}
+                disabled={cloudBusy() || cloudLoading()}
+              >
+                {cloudLoading()
+                  ? "ログイン状態を確認中…"
+                  : cloudBusy()
+                    ? "Googleへ移動中…"
+                    : "Googleで登録・ログイン"}
               </button>
             </div>
-            <Show when={cloudError()}>
-              <p class="error">{cloudError()}</p>
-            </Show>
-          </form>
+            <p class="muted">
+              この端末の作品はログイン後に自動同期されます。共有端末ではご注意ください。
+            </p>
+          </div>
         }
       >
         <div class="cloud-status">
@@ -361,10 +341,17 @@ export default function SettingsPage() {
             ログアウト
           </button>
         </div>
-      <Show when={cloudError()}>
-        <p class="error">{cloudError()}</p>
       </Show>
-    </Show>
+      <Show when={cloudError()}>
+        <p class="error" role="alert">
+          {cloudError()}
+        </p>
+      </Show>
+      <Show when={cloudNotice()}>
+        <p class="success" role="status">
+          {cloudNotice()}
+        </p>
+      </Show>
 
       <h2>手動同期</h2>
       <p class="muted">
@@ -400,9 +387,7 @@ export default function SettingsPage() {
           </button>
         </div>
         <Show when={syncMessage()}>
-          <p class={syncMessage()!.kind === "error" ? "error" : "success"}>
-            {syncMessage()!.text}
-          </p>
+          <p class={syncMessage()!.kind === "error" ? "error" : "success"}>{syncMessage()!.text}</p>
         </Show>
       </div>
 
@@ -417,14 +402,17 @@ export default function SettingsPage() {
         </button>
         <label class="file-input-label">
           ファイルからインポート
-          <input type="file" accept="application/json,.json" onChange={handleImport} disabled={syncState().status === "syncing"} />
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImport}
+            disabled={syncState().status === "syncing"}
+          />
         </label>
       </div>
       <Show when={message()}>
-        <p class={message()!.kind === "error" ? "error" : "success"}>
-          {message()!.text}
-        </p>
+        <p class={message()!.kind === "error" ? "error" : "success"}>{message()!.text}</p>
       </Show>
     </section>
-  )
+  );
 }

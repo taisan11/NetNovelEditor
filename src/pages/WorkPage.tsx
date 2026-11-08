@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js"
+import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import {
   getSyosetu,
   saveSyosetu,
@@ -6,66 +6,68 @@ import {
   saveChapter,
   deleteChapter,
   nextChapterPage,
-} from "../storage"
-import type { Syosetu, Chapter } from "../storage"
-import { navigate } from "../App"
-import { autoSyncOnNavigate, subscribeSync } from "../sync"
-import Trash from "lucide-solid/icons/trash"
+} from "../storage";
+import type { Syosetu, Chapter } from "../storage";
+import { navigate } from "../App";
+import { autoSyncOnNavigate, subscribeSync } from "../sync";
+import Trash from "lucide-solid/icons/trash";
 
 export default function WorkPage(props: { title: string }) {
-  const [work, setWork] = createSignal<Syosetu | null>(null)
-  const [chapters, setChapters] = createSignal<Chapter[]>([])
-  const [newChapterTitle, setNewChapterTitle] = createSignal("")
-  const [error, setError] = createSignal<string | null>(null)
+  const [work, setWork] = createSignal<Syosetu | null>(null);
+  const [chapters, setChapters] = createSignal<Chapter[]>([]);
+  const [newChapterTitle, setNewChapterTitle] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
 
   const refresh = () => {
-    const w = getSyosetu(props.title)
-    setWork(w)
-    setChapters(w ? listChapters(props.title) : [])
-  }
+    const w = getSyosetu(props.title);
+    setWork(w);
+    setChapters(w ? listChapters(props.title) : []);
+  };
 
   createEffect(() => {
-    refresh()
-  })
+    refresh();
+  });
 
   onMount(() => {
-    onCleanup(subscribeSync((state) => {
-      if (state.status !== "syncing") refresh()
-    }))
-  })
+    onCleanup(
+      subscribeSync((state) => {
+        if (state.status !== "syncing") refresh();
+      }),
+    );
+  });
 
   const handleAddChapter = (e: Event) => {
-    e.preventDefault()
-    const title = newChapterTitle().trim()
+    e.preventDefault();
+    const title = newChapterTitle().trim();
     if (!title) {
-      setError("話タイトルを入力してください")
-      return
+      setError("話タイトルを入力してください");
+      return;
     }
-    const w = work()
+    const w = work();
     if (!w) {
-      setError("作品が見つかりません")
-      return
+      setError("作品が見つかりません");
+      return;
     }
-    const page = nextChapterPage(props.title)
-    saveChapter({ Syosetu_title: props.title, title, page, honbun: "" })
-    saveSyosetu({ ...w, pages: page })
-    setNewChapterTitle("")
-    setError(null)
-    refresh()
-  }
+    const page = nextChapterPage(props.title);
+    saveChapter({ Syosetu_title: props.title, title, page, honbun: "" });
+    saveSyosetu({ ...w, pages: page });
+    setNewChapterTitle("");
+    setError(null);
+    refresh();
+  };
 
   const openChapter = (page: number) => {
-    navigate(`/${encodeURIComponent(props.title)}/${page}`)
-  }
+    navigate(`/${encodeURIComponent(props.title)}/${page}`);
+  };
 
   const handleDeleteChapter = (chapter: Chapter) => {
-    if (!confirm(`話「${chapter.title}」を削除しますか？`)) return
-    deleteChapter(chapter.Syosetu_title, chapter.page)
-    refresh()
-    void autoSyncOnNavigate()
-  }
+    if (!confirm(`話「${chapter.title}」を削除しますか？`)) return;
+    deleteChapter(chapter.Syosetu_title, chapter.page);
+    refresh();
+    void autoSyncOnNavigate();
+  };
 
-  const goHome = () => navigate("")
+  const goHome = () => navigate("");
 
   return (
     <Show
@@ -81,8 +83,8 @@ export default function WorkPage(props: { title: string }) {
         <a
           href="#"
           onClick={(e) => {
-            e.preventDefault()
-            goHome()
+            e.preventDefault();
+            goHome();
           }}
         >
           ← 作品一覧
@@ -103,8 +105,8 @@ export default function WorkPage(props: { title: string }) {
                 <a
                   href={`#/${encodeURIComponent(props.title)}/${chapter.page}`}
                   onClick={(e) => {
-                    e.preventDefault()
-                    openChapter(chapter.page)
+                    e.preventDefault();
+                    openChapter(chapter.page);
                   }}
                 >
                   {chapter.page}. {chapter.title}
@@ -137,5 +139,5 @@ export default function WorkPage(props: { title: string }) {
         <p class="error">{error()}</p>
       </Show>
     </Show>
-  )
+  );
 }

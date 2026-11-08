@@ -1,53 +1,55 @@
-import { createSignal, For, Show, onMount, onCleanup } from "solid-js"
-import { listSyosetu, getSyosetu, saveSyosetu, deleteSyosetu } from "../storage"
-import type { Syosetu } from "../storage"
-import { navigate } from "../App"
-import { autoSyncOnNavigate, subscribeSync } from "../sync"
+import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { listSyosetu, getSyosetu, saveSyosetu, deleteSyosetu } from "../storage";
+import type { Syosetu } from "../storage";
+import { navigate } from "../App";
+import { autoSyncOnNavigate, subscribeSync } from "../sync";
 
 export default function HomePage() {
-  const [newTitle, setNewTitle] = createSignal("")
-  const [error, setError] = createSignal<string | null>(null)
-  const [works, setWorks] = createSignal<Syosetu[]>(listSyosetu())
+  const [newTitle, setNewTitle] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
+  const [works, setWorks] = createSignal<Syosetu[]>(listSyosetu());
 
-  const refresh = () => setWorks(listSyosetu())
+  const refresh = () => setWorks(listSyosetu());
 
   onMount(() => {
-    onCleanup(subscribeSync((state) => {
-      if (state.status !== "syncing") refresh()
-    }))
-  })
+    onCleanup(
+      subscribeSync((state) => {
+        if (state.status !== "syncing") refresh();
+      }),
+    );
+  });
 
   const handleCreate = (e: Event) => {
-    e.preventDefault()
-    const title = newTitle().trim()
+    e.preventDefault();
+    const title = newTitle().trim();
     if (!title) {
-      setError("タイトルを入力してください")
-      return
+      setError("タイトルを入力してください");
+      return;
     }
     if (getSyosetu(title)) {
-      setError("同じタイトルの作品が既に存在します")
-      return
+      setError("同じタイトルの作品が既に存在します");
+      return;
     }
-    saveSyosetu({ title, pages: 0, plot: "" })
-    setNewTitle("")
-    setError(null)
-    refresh()
-  }
+    saveSyosetu({ title, pages: 0, plot: "" });
+    setNewTitle("");
+    setError(null);
+    refresh();
+  };
 
   const open = (title: string) => {
-    navigate(`/${encodeURIComponent(title)}`)
-  }
+    navigate(`/${encodeURIComponent(title)}`);
+  };
 
   const openSettings = () => {
-    navigate("/settings")
-  }
+    navigate("/settings");
+  };
 
   const handleDelete = (work: Syosetu) => {
-    if (!confirm(`作品「${work.title}」を削除しますか？`)) return
-    deleteSyosetu(work.title)
-    refresh()
-    void autoSyncOnNavigate()
-  }
+    if (!confirm(`作品「${work.title}」を削除しますか？`)) return;
+    deleteSyosetu(work.title);
+    refresh();
+    void autoSyncOnNavigate();
+  };
 
   return (
     <section>
@@ -84,8 +86,8 @@ export default function HomePage() {
                 <a
                   href={`#/${encodeURIComponent(work.title)}`}
                   onClick={(e) => {
-                    e.preventDefault()
-                    open(work.title)
+                    e.preventDefault();
+                    open(work.title);
                   }}
                 >
                   {work.title}
@@ -105,5 +107,5 @@ export default function HomePage() {
         </ul>
       </Show>
     </section>
-  )
+  );
 }
