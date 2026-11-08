@@ -610,3 +610,19 @@ button.small {
   align-items: center;
   margin-top: 4px;
 }
+
+.plan-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.plan-card {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.plan-card.active {
+  border-color: var(--link);
+}

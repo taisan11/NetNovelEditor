@@ -13,6 +13,8 @@ import {
   type Syosetu,
   type Chapter,
 } from "./storage";
+import { acceptSettings, getPendingSettings, type SettingsRecord } from "./settings";
+import type { PlanInfo } from "../shared/plans";
 
 export type SyncStatus = "idle" | "syncing" | "error";
 
@@ -22,6 +24,7 @@ export interface SyncState {
   lastError: string | null;
   pendingPush: number;
   lastResult: SyncResult | null;
+  plan: PlanInfo | null;
 }
 
 export interface SyncResult {
@@ -68,12 +71,13 @@ let state: SyncState = {
   lastError: null,
   pendingPush: 0,
   lastResult: null,
+  plan: null,
 };
 
 export function setSyncAccount(accountId: string | null): void {
   if (syncAccountId === accountId) return;
   syncAccountId = accountId;
-  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null, lastError: null, lastResult: null });
+  setState({ lastSyncAt: accountId ? loadLastSyncAt() : null, lastError: null, lastResult: null, plan: null });
 }
 
 function emit(): void {
@@ -86,14 +90,14 @@ function setState(patch: Partial<SyncState>): void {
 }
 
 function recomputePending(): void {
-  const pending = pendingPushCount();
+  const pending = pendingPushCount() + (getPendingSettings(syncAccountId) ? 1 : 0);
   if (state.pendingPush !== pending) {
     setState({ pendingPush: pending });
   }
 }
 
 export function hasPendingPush(): boolean {
-  return pendingPushCount() > 0;
+  return pendingPushCount() > 0 || getPendingSettings(syncAccountId) !== null;
 }
 
 export function getSyncState(): SyncState {
@@ -163,6 +167,8 @@ interface SnapshotResponse {
   syosetu: ServerSyosetu[];
   chapters: ServerChapter[];
   serverTime: number;
+  settings?: SettingsRecord | null;
+  plan?: PlanInfo;
 }
 
 interface PushResultEntry {
@@ -177,6 +183,7 @@ interface PushResponse {
     syosetu: PushResultEntry[];
     chapters: PushResultEntry[];
   };
+  settings?: SettingsRecord;
 }
 
 function toClientSyosetu(s: ServerSyosetu): Syosetu {
@@ -219,6 +226,7 @@ export interface PushDirtyResult {
 
 export async function uploadSync(): Promise<PushDirtyResult> {
   const accountId = syncAccountId;
+  const settings = getPendingSettings(accountId);
   const dirtyS = listDirtySyosetu();
   const dirtyC = listDirtyChapters();
   const deletedS = dirtyS.filter((s) => s.deleted);
@@ -234,6 +242,18 @@ export async function uploadSync(): Promise<PushDirtyResult> {
     serverWinsSyosetu: 0,
     serverWinsChapters: 0,
   };
+  // Save preferences separately: an over-quota novel upload must not block them.
+  if (settings && accountId) {
+    result.uploadRequestSent = true;
+    const saved = await fetchJson<PushResponse>("/api/sync/push", {
+      method: "POST",
+      body: JSON.stringify({ syosetu: [], chapters: [], settings }),
+    });
+    if (!saved.ok || accountId !== syncAccountId) {
+      return { ...result, ok: false, error: !saved.ok ? saved.error : "同期中にアカウントが変更されました" };
+    }
+    if (saved.data.settings) acceptSettings(saved.data.settings, accountId, settings);
+  }
   if (dirtyS.length === 0 && dirtyC.length === 0) {
     recomputePending();
     return result;
@@ -413,7 +433,8 @@ export async function downloadSync(): Promise<PullResult> {
   }
 
   saveLastSyncAt(res.data.serverTime);
-  setState({ lastSyncAt: res.data.serverTime });
+  if (accountId && res.data.settings) acceptSettings(res.data.settings, accountId);
+  setState({ lastSyncAt: res.data.serverTime, plan: res.data.plan ?? state.plan });
   recomputePending();
   return { ok: true, pulledSyosetu, pulledChapters, serverTime: res.data.serverTime };
 }
@@ -441,6 +462,8 @@ async function runFullSync(): Promise<{ ok: boolean; result?: SyncResult; error?
 
   const push = await uploadSync();
   if (!push.ok) {
+    // Quotas and upload failures must not prevent reading existing cloud data.
+    await downloadSync();
     const errorMsg = push.error ?? "uploadに失敗しました";
     setState({ status: "error", lastError: errorMsg });
     return { ok: false, error: errorMsg };
@@ -517,7 +540,7 @@ export function startAutoSync(): () => void {
   window.addEventListener("focus", run);
   window.addEventListener("online", run);
   document.addEventListener("visibilitychange", run);
-  const timer = window.setInterval(run, 60_000);
+  const timer = window.setInterval(run, 90_000);
   run();
   return () => {
     window.clearInterval(timer);

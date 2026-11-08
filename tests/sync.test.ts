@@ -328,7 +328,7 @@ test("automatic sync registers wake-up events and polling and removes them on cl
     configurable: true,
     value: Object.assign(windowTarget, {
       setInterval: mock((callback: () => void, delay: number) => {
-        expect(delay).toBe(60_000);
+        expect(delay).toBe(90_000);
         poll = callback;
         return 1;
       }),

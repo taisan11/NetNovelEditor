@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { and, eq, gt, inArray } from "drizzle-orm";
-import { syosetu, chapter, type SyosetuRow, type ChapterRow } from "./schema";
+import { and, eq, gt, lt, inArray } from "drizzle-orm";
+import { syosetu, chapter, userSettings, type SyosetuRow, type ChapterRow } from "./schema";
+import { getPlanInfo, withQuota } from "./plans";
+import { isSettingsRecord, type SettingsRecord } from "../shared/settings";
 import { requireAuth, type SessionContext } from "./middleware";
 import { makeDb } from "./db";
-import {MAX_TITLE_LENGTH,MAX_HONBUN_LENGTH,MAX_PLOT_LENGTH,PUSH_BODY_MAX_BYTES,} from "./limits";
+import { MAX_TITLE_LENGTH, MAX_HONBUN_LENGTH, MAX_PLOT_LENGTH, PUSH_BODY_MAX_BYTES } from "./limits";
 
 interface Bindings {
   TURSO_URL: string;
@@ -36,6 +38,7 @@ interface ChapterPayload {
 interface PushBody {
   syosetu: SyosetuPayload[];
   chapters: ChapterPayload[];
+  settings?: SettingsRecord;
 }
 
 interface PushResultEntry {
@@ -80,6 +83,14 @@ function asChapterPayload(row: ChapterRow): ChapterPayload {
 const app = new Hono<{ Bindings: Bindings; Variables: SessionContext }>();
 
 app.use("/*", requireAuth);
+app.use("/*", async (c, next) => {
+  c.header("Cache-Control", "no-store");
+  const origin = c.req.header("Origin");
+  if (c.req.method !== "GET" && origin && origin !== new URL(c.req.url).origin) {
+    return c.json({ error: "不正なリクエストです" }, 403);
+  }
+  await next();
+});
 
 app.get("/snapshot", async (c) => {
   const db = makeDb(c.env.TURSO_URL, c.env.TURSO_TOKEN);
@@ -96,14 +107,20 @@ app.get("/snapshot", async (c) => {
     ? and(eq(chapter.userId, user.id), gt(chapter.updatedAt, toMs(since)))
     : eq(chapter.userId, user.id);
 
-  const [sRows, cRows] = await Promise.all([
+  const [sRows, cRows, settingsRows, plan] = await Promise.all([
     db.select().from(syosetu).where(sWhere),
     db.select().from(chapter).where(cWhere),
+    db.select().from(userSettings).where(eq(userSettings.userId, user.id)),
+    getPlanInfo(db, user.id),
   ]);
 
   return c.json({
     syosetu: sRows.map(asSyosetuPayload),
     chapters: cRows.map(asChapterPayload),
+    settings: settingsRows[0]
+      ? { values: settingsRows[0].values, updatedAt: settingsRows[0].updatedAt.getTime() }
+      : null,
+    plan,
     serverTime: Date.now(),
   });
 });
@@ -177,51 +194,53 @@ app.post(
 
     const db = makeDb(c.env.TURSO_URL, c.env.TURSO_TOKEN);
 
-    const existing = await db
-      .select()
-      .from(syosetu)
-      .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.id)))
-      .limit(1);
+    return withQuota(db, user.id, async (db) => {
+      const existing = await db
+        .select()
+        .from(syosetu)
+        .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.id)))
+        .limit(1);
 
-    const now = Date.now();
-    const clientUpdated = body.updatedAt;
+      const now = Date.now();
+      const clientUpdated = body.updatedAt;
 
-    if (existing.length === 0) {
-      await db.insert(syosetu).values({
-        id: body.id,
-        userId: user.id,
-        title: body.title,
-        pages: body.pages ?? 0,
-        plot: body.plot ?? "",
-        createdAt: toMs(body.createdAt ?? now),
-        updatedAt: toMs(clientUpdated),
-        deleted: !!body.deleted,
-      });
-      return c.json({ ok: true, winner: "client", appliedAt: now });
-    }
+      if (existing.length === 0) {
+        await db.insert(syosetu).values({
+          id: body.id,
+          userId: user.id,
+          title: body.title,
+          pages: body.pages ?? 0,
+          plot: body.plot ?? "",
+          createdAt: toMs(body.createdAt ?? now),
+          updatedAt: toMs(clientUpdated),
+          deleted: !!body.deleted,
+        });
+        return c.json({ ok: true, winner: "client", appliedAt: now });
+      }
 
-    const row = existing[0];
-    if (clientUpdated <= row.updatedAt.getTime()) {
-      return c.json({
-        ok: true,
-        winner: "server",
-        appliedAt: row.updatedAt.getTime(),
-        server: asSyosetuPayload(row),
-      });
-    }
+      const row = existing[0];
+      if (clientUpdated <= row.updatedAt.getTime()) {
+        return c.json({
+          ok: true,
+          winner: "server",
+          appliedAt: row.updatedAt.getTime(),
+          server: asSyosetuPayload(row),
+        });
+      }
 
-    await db
-      .update(syosetu)
-      .set({
-        title: body.title,
-        pages: body.pages ?? row.pages,
-        plot: body.plot ?? row.plot,
-        updatedAt: toMs(clientUpdated),
-        deleted: !!body.deleted,
-      })
-      .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.id)));
+      await db
+        .update(syosetu)
+        .set({
+          title: body.title,
+          pages: body.pages ?? row.pages,
+          plot: body.plot ?? row.plot,
+          updatedAt: toMs(clientUpdated),
+          deleted: !!body.deleted,
+        })
+        .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.id)));
 
-    return c.json({ ok: true, winner: "client", appliedAt: clientUpdated });
+      return c.json({ ok: true, winner: "client", appliedAt: clientUpdated });
+    });
   },
 );
 
@@ -248,71 +267,73 @@ app.post(
 
     const db = makeDb(c.env.TURSO_URL, c.env.TURSO_TOKEN);
 
-    const parent = await db
-      .select()
-      .from(syosetu)
-      .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.syosetuId)))
-      .limit(1);
-    if (parent.length === 0) {
-      return c.json(jsonError("紐づく作品が見つかりません"), 400);
-    }
+    return withQuota(db, user.id, async (db) => {
+      const parent = await db
+        .select()
+        .from(syosetu)
+        .where(and(eq(syosetu.userId, user.id), eq(syosetu.id, body.syosetuId)))
+        .limit(1);
+      if (parent.length === 0) {
+        return c.json(jsonError("紐づく作品が見つかりません"), 400);
+      }
 
-    const existing = await db
-      .select()
-      .from(chapter)
-      .where(and(eq(chapter.userId, user.id), eq(chapter.id, body.id)))
-      .limit(1);
+      const existing = await db
+        .select()
+        .from(chapter)
+        .where(and(eq(chapter.userId, user.id), eq(chapter.id, body.id)))
+        .limit(1);
 
-    const now = Date.now();
-    const clientUpdated = body.updatedAt;
+      const now = Date.now();
+      const clientUpdated = body.updatedAt;
 
-    if (existing.length === 0) {
-      await db.insert(chapter).values({
-        id: body.id,
-        syosetuId: body.syosetuId,
-        userId: user.id,
-        title: body.title,
-        page: body.page,
-        honbun: body.honbun ?? "",
-        createdAt: toMs(body.createdAt ?? now),
-        updatedAt: toMs(clientUpdated),
-        deleted: !!body.deleted,
-      });
-      return c.json({ ok: true, winner: "client", appliedAt: now });
-    }
+      if (existing.length === 0) {
+        await db.insert(chapter).values({
+          id: body.id,
+          syosetuId: body.syosetuId,
+          userId: user.id,
+          title: body.title,
+          page: body.page,
+          honbun: body.honbun ?? "",
+          createdAt: toMs(body.createdAt ?? now),
+          updatedAt: toMs(clientUpdated),
+          deleted: !!body.deleted,
+        });
+        return c.json({ ok: true, winner: "client", appliedAt: now });
+      }
 
-    const row = existing[0];
-    if (clientUpdated <= row.updatedAt.getTime()) {
-      return c.json({
-        ok: true,
-        winner: "server",
-        appliedAt: row.updatedAt.getTime(),
-        server: asChapterPayload(row),
-      });
-    }
+      const row = existing[0];
+      if (clientUpdated <= row.updatedAt.getTime()) {
+        return c.json({
+          ok: true,
+          winner: "server",
+          appliedAt: row.updatedAt.getTime(),
+          server: asChapterPayload(row),
+        });
+      }
 
-    if (body.honbun === "" && row.honbun !== "" && body.allowEmptyHonbun !== true) {
-      return c.json({
-        ok: true,
-        winner: "server",
-        appliedAt: row.updatedAt.getTime(),
-        server: asChapterPayload(row),
-      });
-    }
+      if (body.honbun === "" && row.honbun !== "" && body.allowEmptyHonbun !== true) {
+        return c.json({
+          ok: true,
+          winner: "server",
+          appliedAt: row.updatedAt.getTime(),
+          server: asChapterPayload(row),
+        });
+      }
 
-    await db
-      .update(chapter)
-      .set({
-        syosetuId: body.syosetuId,
-        title: body.title,
-        page: body.page,
-        honbun: body.honbun ?? row.honbun,
-        updatedAt: toMs(clientUpdated),
-        deleted: !!body.deleted,
-      })
-      .where(and(eq(chapter.userId, user.id), eq(chapter.id, body.id)));
+      await db
+        .update(chapter)
+        .set({
+          syosetuId: body.syosetuId,
+          title: body.title,
+          page: body.page,
+          honbun: body.honbun ?? row.honbun,
+          updatedAt: toMs(clientUpdated),
+          deleted: !!body.deleted,
+        })
+        .where(and(eq(chapter.userId, user.id), eq(chapter.id, body.id)));
 
-    return c.json({ ok: true, winner: "client", appliedAt: clientUpdated });
+      return c.json({ ok: true, winner: "client", appliedAt: clientUpdated });
+    });
   },
 );
 
@@ -328,6 +349,9 @@ app.post(
     if (!body) return c.json(jsonError("リクエストボディが不正です"), 400);
     if (!Array.isArray(body.syosetu) || !Array.isArray(body.chapters)) {
       return c.json(jsonError("syosetu/chapters は配列で指定してください"), 400);
+    }
+    if (body.settings !== undefined && !isSettingsRecord(body.settings)) {
+      return c.json(jsonError("設定データが不正です"), 400);
     }
 
     for (const s of body.syosetu) {
@@ -361,8 +385,22 @@ app.post(
 
     const sResults: PushResultEntry[] = [];
     const cResults: PushResultEntry[] = [];
+    let settingsResult: SettingsRecord | undefined;
 
-    await db.transaction(async (tx) => {
+    await withQuota(db, user.id, async (tx) => {
+      if (body.settings) {
+        const { fontSize, lineHeight, theme, verticalWriting } = body.settings.values;
+        const values = { fontSize, lineHeight, theme, verticalWriting };
+        await tx.insert(userSettings).values({
+          userId: user.id, values, updatedAt: toMs(body.settings.updatedAt),
+        }).onConflictDoUpdate({
+          target: userSettings.userId,
+          set: { values, updatedAt: toMs(body.settings.updatedAt) },
+          setWhere: lt(userSettings.updatedAt, toMs(body.settings.updatedAt)),
+        });
+        const [saved] = await tx.select().from(userSettings).where(eq(userSettings.userId, user.id));
+        settingsResult = { values: saved.values, updatedAt: saved.updatedAt.getTime() };
+      }
       const syosetuIds = body.syosetu
         .map((s) => s.id)
         .filter((id): id is string => typeof id === "string");
@@ -487,7 +525,7 @@ app.post(
       }
     });
 
-    return c.json({ ok: true, results: { syosetu: sResults, chapters: cResults } });
+    return c.json({ ok: true, results: { syosetu: sResults, chapters: cResults }, settings: settingsResult });
   },
 );
 

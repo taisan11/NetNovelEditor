@@ -1,9 +1,10 @@
-import { createSignal, createEffect, onMount, Show, onCleanup } from "solid-js";
+import { createSignal, onMount, Show, onCleanup, For } from "solid-js";
 import { exportBackup, importBackup } from "../storage";
-import { getSettings, setSettings, applySettings } from "../settings";
+import { getSettings, setSettings, subscribeSettings, type Settings } from "../settings";
 import type { Theme } from "../settings";
 import { navigate } from "../App";
-import { getSyncState, subscribeSync, syncNow, setSyncAccount, type SyncState } from "../sync";
+import { autoSyncOnNavigate, getSyncState, subscribeSync, syncNow, setSyncAccount, type SyncState } from "../sync";
+import { PLANS, formatStorageBytes, type PlanId } from "../../shared/plans";
 
 type Message = { kind: "success" | "error"; text: string };
 type CloudUser = { id: string; email: string };
@@ -28,27 +29,19 @@ function formatDateTime(ts: number): string {
 
 export default function SettingsPage() {
   const initial = getSettings();
-  const [fontSize, setFontSize] = createSignal(initial.fontSize);
-  const [lineHeight, setLineHeight] = createSignal(initial.lineHeight);
-  const [theme, setTheme] = createSignal<Theme>(initial.theme);
-  const [verticalWriting, setVerticalWriting] = createSignal(initial.verticalWriting);
+  const [settings, setLocalSettings] = createSignal(initial);
+  const fontSize = () => settings().fontSize;
+  const lineHeight = () => settings().lineHeight;
+  const theme = () => settings().theme;
+  const verticalWriting = () => settings().verticalWriting;
   const [message, setMessage] = createSignal<Message | null>(null);
 
-  let settingsReady = false;
-  createEffect(() => {
-    const s = {
-      fontSize: fontSize(),
-      lineHeight: lineHeight(),
-      theme: theme(),
-      verticalWriting: verticalWriting(),
-    };
-    if (!settingsReady) {
-      settingsReady = true;
-      return;
-    }
-    setSettings(s);
-    applySettings(s);
-  });
+  const updateSettings = (patch: Partial<Settings>) => {
+    setSettings({ ...getSettings(), ...patch });
+    setSyncState(getSyncState());
+  };
+  const unsubscribeSettings = subscribeSettings(setLocalSettings);
+  onCleanup(unsubscribeSettings);
 
   const handleBackup = () => {
     try {
@@ -103,7 +96,7 @@ export default function SettingsPage() {
   const goHome = () => navigate("");
 
   const selectTheme = (next: Theme) => {
-    setTheme(next);
+    updateSettings({ theme: next });
   };
 
   const [cloudError, setCloudError] = createSignal<string | null>(null);
@@ -120,6 +113,7 @@ export default function SettingsPage() {
       const user = data.user ?? null;
       setCloudUser(user);
       setSyncAccount(user?.id ?? null);
+      if (user) void autoSyncOnNavigate();
     } catch {
       setCloudUser(null);
       setSyncAccount(null);
@@ -232,6 +226,7 @@ export default function SettingsPage() {
       <h1>設定</h1>
 
       <h2>表示</h2>
+      <p class="muted">表示・テーマの設定は端末に保存され、ログイン中は作品と一緒にクラウドへ同期されます。</p>
       <div class="setting-row">
         <label for="font-size-input">
           フォントサイズ: <strong>{fontSize()}px</strong>
@@ -243,7 +238,7 @@ export default function SettingsPage() {
           max="28"
           step="1"
           value={fontSize()}
-          onInput={(e) => setFontSize(Number(e.currentTarget.value))}
+          onInput={(e) => updateSettings({ fontSize: Number(e.currentTarget.value) })}
         />
       </div>
       <div class="setting-row">
@@ -257,7 +252,7 @@ export default function SettingsPage() {
           max="2.4"
           step="0.1"
           value={lineHeight()}
-          onInput={(e) => setLineHeight(Number(e.currentTarget.value))}
+          onInput={(e) => updateSettings({ lineHeight: Number(e.currentTarget.value) })}
         />
       </div>
       <div class="setting-row">
@@ -265,7 +260,7 @@ export default function SettingsPage() {
           <input
             type="checkbox"
             checked={verticalWriting()}
-            onChange={(e) => setVerticalWriting(e.currentTarget.checked)}
+            onChange={(e) => updateSettings({ verticalWriting: e.currentTarget.checked })}
           />
           縦書きモード
         </label>
@@ -353,9 +348,28 @@ export default function SettingsPage() {
         </p>
       </Show>
 
+      <h2>プラン</h2>
+      <div class="plan-options">
+        <For each={Object.keys(PLANS) as PlanId[]}>{(id) => (
+          <div class="plan-card" classList={{ active: !!cloudUser() && syncState().plan?.id === id }}>
+            <h3>{PLANS[id].name}</h3>
+            <p>クラウド保存: {PLANS[id].maxWorks.toLocaleString()}作品まで</p>
+            <p>容量: {formatStorageBytes(PLANS[id].maxStorageBytes)}</p>
+            <Show when={cloudUser() && syncState().plan?.id === id}><strong>利用中</strong></Show>
+          </div>
+        )}</For>
+      </div>
+      <Show when={cloudUser() && syncState().plan}>
+        <p role="status">
+          使用量: {syncState().plan!.usage.works.toLocaleString()}作品 / {PLANS[syncState().plan!.id].maxWorks.toLocaleString()}作品、
+          {formatStorageBytes(syncState().plan!.usage.storageBytes)} / {formatStorageBytes(PLANS[syncState().plan!.id].maxStorageBytes)}
+        </p>
+      </Show>
+      <p class="muted">プラン変更は管理者にお問い合わせください。決済機能はありません。上限はクラウド上の作品数と、タイトル・プロット・本文のUTF-8容量に適用されます。端末内の編集・バックアップや設定同期はどちらのプランでも利用できます。</p>
+
       <h2>手動同期</h2>
       <p class="muted">
-        起動時・画面移動時・画面復帰時・通信復旧時と、表示中は1分ごとに自動同期します。
+        起動時・画面移動時・画面復帰時・通信復旧時と、表示中は1.5分（90秒）ごとに作品・設定を自動同期します。
         ここから手動でも同期できます。競合があった際はより新しい編集が優先されます。
       </p>
       <div class="sync-panel">

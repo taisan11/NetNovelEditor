@@ -19,6 +19,17 @@ export const users = sqliteTable(
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 
+export const accountPlans = sqliteTable("account_plans", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  plan: text("plan", { enum: ["free", "pro"] }).notNull().default("free"),
+});
+
+export const userSettings = sqliteTable("user_settings", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  values: text("settings", { mode: "json" }).$type<import("../shared/settings").Settings>().notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const syosetu = sqliteTable(
   "syosetu",
   {

@@ -1,13 +1,9 @@
-export type Theme = "light" | "dark" | "sepia";
-
-export interface Settings {
-  fontSize: number;
-  lineHeight: number;
-  theme: Theme;
-  verticalWriting: boolean;
-}
+import { isSettingsRecord, type Settings, type SettingsRecord, type Theme } from "../shared/settings";
+export type { Settings, SettingsRecord, Theme } from "../shared/settings";
 
 export const SETTINGS_KEY = "netnoveleditor_settings_v1";
+const ACK_KEY = "netnoveleditor_settings_ack_v1_";
+const listeners = new Set<(settings: Settings) => void>();
 
 const DEFAULT_SETTINGS: Settings = {
   fontSize: 16,
@@ -50,7 +46,49 @@ export function getSettings(): Settings {
 
 export function setSettings(settings: Settings): void {
   if (typeof localStorage === "undefined") return;
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const previous = getSettingsRecord();
+  if (previous && JSON.stringify(previous.values) === JSON.stringify(settings)) return;
+  saveRecord({ values: settings, updatedAt: Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1) });
+}
+
+export function getSettingsRecord(): SettingsRecord | null {
+  if (typeof localStorage === "undefined") return null;
+  const raw = localStorage.getItem(SETTINGS_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { updatedAt?: number };
+    return { values: getSettings(), updatedAt: Number.isSafeInteger(parsed.updatedAt) && parsed.updatedAt! > 0 ? parsed.updatedAt! : 1 };
+  } catch { return null; }
+}
+
+export function getPendingSettings(accountId: string | null): SettingsRecord | null {
+  if (!accountId || typeof localStorage === "undefined") return null;
+  const record = getSettingsRecord();
+  const ack = Number(localStorage.getItem(ACK_KEY + encodeURIComponent(accountId)) ?? 0);
+  return record && record.updatedAt !== ack ? record : null;
+}
+
+function saveRecord(record: SettingsRecord): void {
+  // Keep the existing flat format readable by older clients. Revision and values
+  // share one write, so a storage failure cannot acknowledge unsaved settings.
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...record.values, updatedAt: record.updatedAt }));
+  applySettings(record.values);
+  for (const listener of listeners) listener(record.values);
+}
+
+export function acceptSettings(record: SettingsRecord, accountId: string, sent?: SettingsRecord): boolean {
+  if (!isSettingsRecord(record)) return false;
+  const current = getSettingsRecord();
+  if (sent ? current?.updatedAt !== sent.updatedAt : getPendingSettings(accountId) !== null) return false;
+  if (current && record.updatedAt < current.updatedAt) return false;
+  saveRecord(record);
+  localStorage.setItem(ACK_KEY + encodeURIComponent(accountId), String(record.updatedAt));
+  return true;
+}
+
+export function subscribeSettings(listener: (settings: Settings) => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 export function applySettings(settings: Settings): void {
