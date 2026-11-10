@@ -3,6 +3,7 @@ import HomePage from "./pages/HomePage";
 import WorkPage from "./pages/WorkPage";
 import ChapterEditPage from "./pages/ChapterEditPage";
 import SettingsPage from "./pages/SettingsPage";
+import StaticPage, { LegalLinks } from "./pages/static";
 import { getSettings, applySettings } from "./settings";
 import { autoSyncOnNavigate, getSyncState, startAutoSync, subscribeSync } from "./sync";
 
@@ -10,7 +11,9 @@ export type Route =
   | { name: "home" }
   | { name: "work"; title: string }
   | { name: "chapter"; syosetuTitle: string; page: number }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "privacy" }
+  | { name: "terms" };
 
 const [getRoute, setRoute] = createSignal<Route>({ name: "home" });
 
@@ -18,6 +21,8 @@ function parseHash(hash: string): Route {
   const cleaned = hash.replace(/^#\/?/, "");
   if (!cleaned) return { name: "home" };
   if (cleaned === "settings") return { name: "settings" };
+  if (cleaned === "static/privacy") return { name: "privacy" };
+  if (cleaned === "static/terms") return { name: "terms" };
   const parts = cleaned.split("/").map((p) => decodeURIComponent(p));
   if (parts.length === 1) {
     return { name: "work", title: parts[0] };
@@ -92,6 +97,12 @@ export default function App() {
       <Show when={getRoute().name === "settings"}>
         <SettingsPage />
       </Show>
+      <Show when={getRoute().name === "privacy" || getRoute().name === "terms"}>
+        <StaticPage page={getRoute().name === "privacy" ? "privacy" : "terms"} />
+      </Show>
+      <footer class="site-footer">
+        <LegalLinks />
+      </footer>
     </main>
   );
 }

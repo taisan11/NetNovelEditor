@@ -101,6 +101,20 @@ body {
   padding: 24px 20px 80px;
 }
 
+.site-footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 12px 0;
+  font-size: 14px;
+}
+
 .sync-indicator {
   position: fixed;
   right: 16px;

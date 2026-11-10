@@ -5,6 +5,7 @@ import type { Theme } from "../settings";
 import { navigate } from "../App";
 import { autoSyncOnNavigate, getSyncState, subscribeSync, syncNow, setSyncAccount, type SyncState } from "../sync";
 import { PLANS, formatStorageBytes, type PlanId } from "../../shared/plans";
+import { LegalLinks } from "./static";
 
 type Message = { kind: "success" | "error"; text: string };
 type CloudUser = { id: string; email: string };
@@ -309,6 +310,8 @@ export default function SettingsPage() {
         when={cloudUser()}
         fallback={
           <div class="cloud-login-form">
+            <p class="muted">ログイン前に以下をご確認ください。ログインすることで、利用規約に同意したものとします。</p>
+            <LegalLinks />
             <div class="cloud-login-actions">
               <button
                 type="button"
